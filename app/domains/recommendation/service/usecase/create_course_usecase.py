@@ -67,44 +67,66 @@ class CreateCourseUseCase:
         time_slot = TimeSlot.from_time(start_time)
         transport = Transport.from_str(dto.transport)
 
-        # 1. 장소 후보 수집
-        places_by_category = await self._collect_places(dto.area)
+        # 1. 카테고리별 트렌드 수집 — 장소 후보 수집량 결정 기준
+        category_trends = await self._collect_category_trends(dto.area)
 
-        # 2. 시간대 필터링 (Domain Service)
+        # 2. 트렌드 기반 장소 후보 수집 (트렌딩 카테고리 → 더 많은 후보)
+        places_by_category = await self._collect_places(dto.area, category_trends)
+
+        # 3. 시간대 필터링 (Domain Service)
         filtered = {
             cat: self._slot_filter.filter(places, time_slot)
             for cat, places in places_by_category.items()
         }
 
-        # 3. 이미지 보강
+        # 4. 이미지 보강
         for cat, places in filtered.items():
             for place in places:
                 place.image_url = await self._fetch_image(place, cat)
 
-        # 4. Datalab 트렌드 점수 반영 (rating에 가산 → scoring 기준으로만 활용)
-        await self._apply_trend_scores(dto.area, filtered)
+        # 5. 수집된 트렌드 점수 반영 (rating에 가산 → scoring 기준으로만 활용)
+        self._apply_trend_scores(filtered, category_trends)
 
-        # 5. 차량 이동 시 주차 정보 조회
+        # 6. 차량 이동 시 주차 정보 조회
         if transport.requires_parking_check():
             for places in filtered.values():
                 for place in places:
                     place.has_parking = await self._search.search_parking(place.road_address)
 
-        # 6. 코스 조합 (Domain Service)
+        # 7. 코스 조합 (Domain Service)
         courses = self._composer.compose(filtered, time_slot, transport, start_time)
 
-        # 7. Rule Scoring으로 메인/서브 순위 결정
+        # 8. Rule Scoring으로 메인/서브 순위 결정
         main, sub1, sub2 = self._scorer.rank_courses(courses)
 
         return self._build_response(main, sub1, sub2, time_slot, len(courses))
 
+    # ── 트렌드 수집 ───────────────────────────────────────────────────────────
+
+    async def _collect_category_trends(self, area: str) -> dict[str, float]:
+        """Datalab으로 지역별 카테고리 트렌드 사전 수집 — 장소 후보 수집량 결정에 사용"""
+        keywords = [f"{area} {CATEGORY_TREND_KEYWORD[cat]}" for cat in ALL_CATEGORIES]
+        try:
+            scores = await self._datalab.get_trend_scores(keywords[:5])
+            return {
+                cat: scores.get(f"{area} {CATEGORY_TREND_KEYWORD[cat]}", 0.0)
+                for cat in ALL_CATEGORIES
+            }
+        except Exception:
+            return {cat: 0.0 for cat in ALL_CATEGORIES}
+
     # ── 장소 수집 ─────────────────────────────────────────────────────────────
 
-    async def _collect_places(self, area: str) -> dict[str, list[Place]]:
+    async def _collect_places(
+        self, area: str, category_trends: dict[str, float]
+    ) -> dict[str, list[Place]]:
+        """트렌드 점수가 높은 카테고리일수록 더 많은 후보 수집 (5~20개)"""
         result: dict[str, list[Place]] = {}
         for cat in ALL_CATEGORIES:
+            trend_score = category_trends.get(cat, 0.0)
+            display = max(5, min(20, int(10 + trend_score * 10)))
             keyword = CATEGORY_NAVER_KEYWORD[cat]
-            raw = await self._search.search_places(f"{area} {keyword}", cat)
+            raw = await self._search.search_places(f"{area} {keyword}", cat, display=display)
             result[cat] = [self._to_place(item, cat, rank) for rank, item in enumerate(raw, 1)]
         return result
 
@@ -154,29 +176,18 @@ class CreateCourseUseCase:
         title = html.unescape(img.get("title", "")).lower()
         return not any(kw in title for kw in _IMAGE_EXCLUDE_KEYWORDS)
 
-    # ── Datalab 트렌드 ────────────────────────────────────────────────────────
+    # ── Datalab 트렌드 반영 ───────────────────────────────────────────────────
 
-    async def _apply_trend_scores(
-        self, area: str, places_by_category: dict[str, list[Place]]
+    def _apply_trend_scores(
+        self,
+        places_by_category: dict[str, list[Place]],
+        category_trends: dict[str, float],
     ) -> None:
-        # {area} + 카테고리 키워드 조합으로 지역별 인기도 수집
-        keywords = [
-            f"{area} {CATEGORY_TREND_KEYWORD[cat]}"
-            for cat in places_by_category
-            if cat in CATEGORY_TREND_KEYWORD
-        ]
-        if not keywords:
-            return
-        try:
-            scores = await self._datalab.get_trend_scores(keywords[:5])
-            # 카테고리 단위로 트렌드 점수 적용 (정렬 기준으로만 사용)
-            for cat, places in places_by_category.items():
-                trend_key = f"{area} {CATEGORY_TREND_KEYWORD.get(cat, '')}"
-                category_trend = scores.get(trend_key, 0.0)
-                for place in places:
-                    place.rating = min(5.0, place.rating + category_trend * 2.5)
-        except Exception:
-            pass  # 트렌드 점수는 보조 지표 — 실패해도 추천 진행
+        """사전 수집된 트렌드 점수를 카테고리 단위로 장소 rating에 반영 (정렬 기준으로만 사용)"""
+        for cat, places in places_by_category.items():
+            category_trend = category_trends.get(cat, 0.0)
+            for place in places:
+                place.rating = min(5.0, place.rating + category_trend * 2.5)
 
     # ── 응답 변환 ─────────────────────────────────────────────────────────────
 
