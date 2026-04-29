@@ -4,6 +4,8 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from app.domains.tracking.domain.exception import InvalidEventNameException
+
 
 def register_exception_handlers(app: FastAPI) -> None:
 
@@ -14,6 +16,10 @@ def register_exception_handlers(app: FastAPI) -> None:
             for e in exc.errors()
         ]
         return JSONResponse(status_code=422, content={"detail": messages})
+
+    @app.exception_handler(InvalidEventNameException)
+    async def invalid_event_name_handler(request: Request, exc: InvalidEventNameException) -> JSONResponse:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
 
     @app.exception_handler(ValueError)
     async def value_error_handler(request: Request, exc: ValueError) -> JSONResponse:

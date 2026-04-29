@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from fastapi import Depends
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.domains.recommendation.service.usecase.create_course_usecase import CreateCourseUseCase
+from app.domains.tracking.repository.event_repository_impl import EventRepositoryImpl
+from app.domains.tracking.service.usecase.track_event_usecase import TrackEventUseCase
+from app.infrastructure.database.session import get_db_session
 from app.infrastructure.external.naver_datalab_client import NaverDatalabClient
 from app.infrastructure.external.naver_map_client import NaverMapClient
 from app.infrastructure.external.naver_search_client import NaverSearchClient
@@ -29,3 +35,9 @@ def get_create_course_usecase() -> CreateCourseUseCase:
         naver_datalab=_naver_datalab_client(),
         naver_map=_naver_map_client(),
     )
+
+
+def get_track_event_usecase(
+    session: AsyncSession = Depends(get_db_session),
+) -> TrackEventUseCase:
+    return TrackEventUseCase(event_repository=EventRepositoryImpl(session=session))
