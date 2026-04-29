@@ -1,0 +1,24 @@
+from __future__ import annotations
+
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+
+
+def register_exception_handlers(app: FastAPI) -> None:
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+        messages = [
+            f"{'.'.join(str(loc) for loc in e['loc'] if loc != 'body')}: {e['msg']}"
+            for e in exc.errors()
+        ]
+        return JSONResponse(status_code=422, content={"detail": messages})
+
+    @app.exception_handler(ValueError)
+    async def value_error_handler(request: Request, exc: ValueError) -> JSONResponse:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    @app.exception_handler(Exception)
+    async def general_handler(request: Request, exc: Exception) -> JSONResponse:
+        return JSONResponse(status_code=500, content={"detail": "서버 오류가 발생했습니다."})
