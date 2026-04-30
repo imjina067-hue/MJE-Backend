@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domains.tracking.domain.entity.event import Event
-from app.domains.tracking.repository.mapper.event_mapper import EventMapper
+from app.domains.courses.domain.entity.event import Event
+from app.domains.courses.repository.mapper.event_mapper import EventMapper
 
 
 class EventRepositoryImpl:

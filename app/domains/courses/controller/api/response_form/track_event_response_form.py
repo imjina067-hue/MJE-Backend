@@ -4,7 +4,7 @@ from typing import Optional
 
 from pydantic import BaseModel
 
-from app.domains.tracking.service.dto.response.track_event_response_dto import TrackEventResponseDto
+from app.domains.courses.service.dto.response.track_event_response_dto import TrackEventResponseDto
 
 
 class TrackEventResponseForm(BaseModel):

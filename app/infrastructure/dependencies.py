@@ -5,9 +5,11 @@ from functools import lru_cache
 from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domains.courses.repository.event_repository_impl import EventRepositoryImpl as CoursesEventRepositoryImpl
+from app.domains.courses.service.usecase.track_event_usecase import TrackEventUseCase as CoursesTrackEventUseCase
+from app.domains.home.repository.event_repository_impl import EventRepositoryImpl as HomeEventRepositoryImpl
+from app.domains.home.service.usecase.track_event_usecase import TrackEventUseCase as HomeTrackEventUseCase
 from app.domains.recommendation.service.usecase.create_course_usecase import CreateCourseUseCase
-from app.domains.tracking.repository.event_repository_impl import EventRepositoryImpl
-from app.domains.tracking.service.usecase.track_event_usecase import TrackEventUseCase
 from app.infrastructure.database.session import get_db_session
 from app.infrastructure.external.naver_datalab_client import NaverDatalabClient
 from app.infrastructure.external.naver_map_client import NaverMapClient
@@ -37,7 +39,13 @@ def get_create_course_usecase() -> CreateCourseUseCase:
     )
 
 
-def get_track_event_usecase(
+def get_home_track_event_usecase(
     session: AsyncSession = Depends(get_db_session),
-) -> TrackEventUseCase:
-    return TrackEventUseCase(event_repository=EventRepositoryImpl(session=session))
+) -> HomeTrackEventUseCase:
+    return HomeTrackEventUseCase(event_repository=HomeEventRepositoryImpl(session=session))
+
+
+def get_courses_track_event_usecase(
+    session: AsyncSession = Depends(get_db_session),
+) -> CoursesTrackEventUseCase:
+    return CoursesTrackEventUseCase(event_repository=CoursesEventRepositoryImpl(session=session))

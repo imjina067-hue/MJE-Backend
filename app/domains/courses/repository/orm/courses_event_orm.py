@@ -6,11 +6,11 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.infrastructure.database.base import Base
 
 
-class TrackingEventOrm(Base):
-    __tablename__ = "tracking_events"
+class CoursesEventOrm(Base):
+    __tablename__ = "courses_events"
     __table_args__ = (
-        Index("idx_session_id", "session_id"),
-        Index("idx_event_name", "event_name"),
+        Index("idx_courses_session_id", "session_id"),
+        Index("idx_courses_event_name", "event_name"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)

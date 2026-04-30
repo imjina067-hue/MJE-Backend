@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, field_validator
 
-from app.domains.tracking.service.dto.request.track_event_request_dto import TrackEventRequestDto
+from app.domains.courses.service.dto.request.track_event_request_dto import TrackEventRequestDto
 
 
 class TrackEventRequestForm(BaseModel):
