@@ -5,6 +5,8 @@ from functools import lru_cache
 from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domains.home.repository.event_repository_impl import EventRepositoryImpl as HomeEventRepositoryImpl
+from app.domains.home.service.usecase.track_event_usecase import TrackEventUseCase as HomeTrackEventUseCase
 from app.domains.recommendation.service.usecase.create_course_usecase import CreateCourseUseCase
 from app.domains.tracking.repository.event_repository_impl import EventRepositoryImpl
 from app.domains.tracking.service.usecase.track_event_usecase import TrackEventUseCase
@@ -41,3 +43,9 @@ def get_track_event_usecase(
     session: AsyncSession = Depends(get_db_session),
 ) -> TrackEventUseCase:
     return TrackEventUseCase(event_repository=EventRepositoryImpl(session=session))
+
+
+def get_home_track_event_usecase(
+    session: AsyncSession = Depends(get_db_session),
+) -> HomeTrackEventUseCase:
+    return HomeTrackEventUseCase(event_repository=HomeEventRepositoryImpl(session=session))
