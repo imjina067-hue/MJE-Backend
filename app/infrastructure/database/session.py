@@ -2,18 +2,23 @@ from __future__ import annotations
 
 from typing import AsyncGenerator
 
+from sqlalchemy import URL
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.infrastructure.config.settings import get_settings
 
 
-def _build_url() -> str | None:
+def _build_url() -> URL | None:
     s = get_settings()
     if not all([s.MYSQL_HOST, s.MYSQL_USER, s.MYSQL_PASSWORD, s.MYSQL_SCHEMA]):
         return None
-    return (
-        f"mysql+aiomysql://{s.MYSQL_USER}:{s.MYSQL_PASSWORD}"
-        f"@{s.MYSQL_HOST}:{s.MYSQL_PORT}/{s.MYSQL_SCHEMA}"
+    return URL.create(
+        drivername="mysql+aiomysql",
+        username=s.MYSQL_USER,
+        password=s.MYSQL_PASSWORD,
+        host=s.MYSQL_HOST,
+        port=s.MYSQL_PORT,
+        database=s.MYSQL_SCHEMA,
     )
 
 
