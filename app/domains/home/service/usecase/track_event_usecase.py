@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
-
 from app.domains.home.domain.entity.event import Event
-from app.domains.home.domain.exception import InvalidEventNameException
 from app.domains.home.domain.value_object.event_name import EventName
 from app.domains.home.repository.event_repository import EventRepository
 from app.domains.home.service.dto.request.track_event_request_dto import TrackEventRequestDto
@@ -21,11 +18,15 @@ class TrackEventUseCase:
         event = Event(
             event_name=event_name.value,
             session_id=dto.session_id,
-            created_at=datetime.utcnow(),
+            page_path=dto.page_path,
+            created_at=dto.timestamp,
         )
 
-        try:
-            await self._repository.save(event)
-            return TrackEventResponseDto(success=True)
-        except Exception:
-            return TrackEventResponseDto(success=False, message="이벤트 저장에 실패했습니다.")
+        await self._repository.save(event)
+
+        return TrackEventResponseDto(
+            event_name=event.event_name,
+            session_id=event.session_id,
+            timestamp=event.created_at,
+            page_path=event.page_path,
+        )

@@ -9,5 +9,6 @@ from typing import Optional
 class Event:
     event_name: str
     session_id: str
+    page_path: str
     created_at: datetime
     id: Optional[int] = None
