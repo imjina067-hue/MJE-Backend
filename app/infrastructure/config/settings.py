@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     NAVER_MAP_CLIENT_ID: str | None = None
     NAVER_MAP_CLIENT_SECRET: str | None = None
 
+    CORS_ORIGINS: list[str] = []
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

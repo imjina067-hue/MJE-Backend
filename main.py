@@ -1,6 +1,7 @@
 import uvicorn
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.domains.courses.controller.api.courses_router import router as courses_router
 from app.domains.home.controller.api.home_router import router as home_router
@@ -18,7 +19,15 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Pioneer Team Backend", lifespan=lifespan)
 
-get_settings()
+settings = get_settings()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.CORS_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 register_exception_handlers(app)
 
