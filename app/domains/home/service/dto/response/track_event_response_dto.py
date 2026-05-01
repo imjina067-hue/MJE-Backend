@@ -1,8 +1,10 @@
 from dataclasses import dataclass
-from typing import Optional
+from datetime import datetime
 
 
 @dataclass
 class TrackEventResponseDto:
-    success: bool
-    message: Optional[str] = None
+    event_name: str
+    session_id: str
+    timestamp: datetime
+    page_path: str
