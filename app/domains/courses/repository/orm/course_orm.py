@@ -1,6 +1,7 @@
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, Integer, JSON, String, Text
+from sqlalchemy import BigInteger, Integer, JSON, String, Text
+from sqlalchemy.dialects.mysql import DATETIME
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.infrastructure.database.base import Base
@@ -20,4 +21,4 @@ class CourseOrm(Base):
     total_duration: Mapped[int] = mapped_column(Integer, nullable=False)
     location_summary: Mapped[str] = mapped_column(String(255), nullable=False)
     route_summary: Mapped[str] = mapped_column(String(500), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(fsp=6), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DATETIME(fsp=6), nullable=False)
