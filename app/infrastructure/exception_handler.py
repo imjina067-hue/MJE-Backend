@@ -10,6 +10,7 @@ from app.domains.courses.domain.exception import (
 from app.domains.home.domain.exception import (
     InvalidEventNameException as HomeInvalidEventNameException,
 )
+from app.domains.recommendation.domain.exception import CourseNotFoundException
 
 
 def register_exception_handlers(app: FastAPI) -> None:
@@ -29,6 +30,10 @@ def register_exception_handlers(app: FastAPI) -> None:
         exc: CoursesInvalidEventNameException | HomeInvalidEventNameException,
     ) -> JSONResponse:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    @app.exception_handler(CourseNotFoundException)
+    async def course_not_found_handler(request: Request, exc: CourseNotFoundException) -> JSONResponse:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
 
     @app.exception_handler(ValueError)
     async def value_error_handler(request: Request, exc: ValueError) -> JSONResponse:

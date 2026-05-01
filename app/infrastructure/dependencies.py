@@ -9,7 +9,9 @@ from app.domains.courses.repository.event_repository_impl import EventRepository
 from app.domains.courses.service.usecase.track_event_usecase import TrackEventUseCase as CoursesTrackEventUseCase
 from app.domains.home.repository.event_repository_impl import EventRepositoryImpl as HomeEventRepositoryImpl
 from app.domains.home.service.usecase.track_event_usecase import TrackEventUseCase as HomeTrackEventUseCase
+from app.domains.recommendation.repository.course_detail_repository_impl import CourseDetailRepositoryImpl
 from app.domains.recommendation.service.usecase.create_course_usecase import CreateCourseUseCase
+from app.domains.recommendation.service.usecase.get_course_detail_usecase import GetCourseDetailUseCase
 from app.infrastructure.database.session import get_db_session
 from app.infrastructure.external.naver_datalab_client import NaverDatalabClient
 from app.infrastructure.external.naver_map_client import NaverMapClient
@@ -49,3 +51,9 @@ def get_courses_track_event_usecase(
     session: AsyncSession = Depends(get_db_session),
 ) -> CoursesTrackEventUseCase:
     return CoursesTrackEventUseCase(event_repository=CoursesEventRepositoryImpl(session=session))
+
+
+def get_course_detail_usecase(
+    session: AsyncSession = Depends(get_db_session),
+) -> GetCourseDetailUseCase:
+    return GetCourseDetailUseCase(course_detail_repository=CourseDetailRepositoryImpl(session=session))
