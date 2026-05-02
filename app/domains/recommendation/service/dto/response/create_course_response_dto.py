@@ -29,6 +29,7 @@ class CourseResultDto:
 
 @dataclass
 class CreateCourseResponseDto:
+    course_id: str
     main_course: Optional[CourseResultDto]
     sub_courses: list[CourseResultDto]
     message: Optional[str] = None

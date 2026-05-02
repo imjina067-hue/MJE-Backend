@@ -14,12 +14,19 @@ from app.domains.home.service.usecase.track_event_usecase import TrackEventUseCa
 from app.domains.recommendation.repository.course_detail_repository_impl import CourseDetailRepositoryImpl
 from app.domains.recommendation.service.usecase.create_course_usecase import CreateCourseUseCase
 from app.domains.recommendation.service.usecase.get_course_detail_usecase import GetCourseDetailUseCase
+from app.domains.recommendation.service.usecase.get_suggested_course_usecase import GetSuggestedCourseUseCase
+from app.infrastructure.cache.course_store import CourseStore
 from app.infrastructure.api.service.usecase.send_email_usecase import SendEmailUseCase
 from app.infrastructure.database.session import get_db_session
 from app.infrastructure.external.email_client import EmailClient
 from app.infrastructure.external.naver_datalab_client import NaverDatalabClient
 from app.infrastructure.external.naver_map_client import NaverMapClient
 from app.infrastructure.external.naver_search_client import NaverSearchClient
+
+
+@lru_cache
+def _course_store() -> CourseStore:
+    return CourseStore()
 
 
 @lru_cache
@@ -42,7 +49,12 @@ def get_create_course_usecase() -> CreateCourseUseCase:
         naver_search=_naver_search_client(),
         naver_datalab=_naver_datalab_client(),
         naver_map=_naver_map_client(),
+        course_store=_course_store(),
     )
+
+
+def get_suggested_course_usecase() -> GetSuggestedCourseUseCase:
+    return GetSuggestedCourseUseCase(course_store=_course_store())
 
 
 def get_home_track_event_usecase(
