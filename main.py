@@ -9,6 +9,7 @@ from app.domains.recommendation.controller.api.recommendation_router import rout
 from app.infrastructure.config import get_settings
 from app.infrastructure.database.create_tables import create_tables
 from app.infrastructure.exception_handler import register_exception_handlers
+from app.infrastructure.logging_middleware import LoggingMiddleware
 
 
 @asynccontextmanager
@@ -20,6 +21,8 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Pioneer Team Backend", lifespan=lifespan)
 
 settings = get_settings()
+
+app.add_middleware(LoggingMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
