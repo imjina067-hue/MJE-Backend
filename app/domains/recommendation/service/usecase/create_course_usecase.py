@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import re
+import uuid
 from datetime import time
 
 from app.domains.recommendation.domain.entity.course import Course
@@ -17,6 +18,7 @@ from app.domains.recommendation.service.dto.response.create_course_response_dto 
     CreateCourseResponseDto,
     PlaceResultDto,
 )
+from app.domains.recommendation.service.port.course_store_port import CourseStorePort
 from app.domains.recommendation.service.port.naver_datalab_port import NaverDatalabPort
 from app.domains.recommendation.service.port.naver_map_port import NaverMapPort
 from app.domains.recommendation.service.port.naver_search_port import NaverSearchPort
@@ -61,10 +63,12 @@ class CreateCourseUseCase:
         naver_search: NaverSearchPort,
         naver_datalab: NaverDatalabPort,
         naver_map: NaverMapPort,
+        course_store: CourseStorePort,
     ) -> None:
         self._search = naver_search
         self._datalab = naver_datalab
         self._map = naver_map
+        self._course_store = course_store
         self._slot_filter = TimeSlotFilter()
         self._scorer = RuleScorer()
         self._composer = CourseComposer()
@@ -110,7 +114,10 @@ class CreateCourseUseCase:
         final_courses = [c for c in [main, sub1, sub2] if c is not None]
         await self._enrich_with_routes(final_courses, dto.transport)
 
-        return self._build_response(main, sub1, sub2, time_slot, len(courses))
+        course_id = str(uuid.uuid4())
+        response = self._build_response(main, sub1, sub2, time_slot, len(courses), course_id)
+        self._course_store.save(course_id, response)
+        return response
 
     # ── 트렌드 수집 ───────────────────────────────────────────────────────────
 
@@ -225,12 +232,14 @@ class CreateCourseUseCase:
         sub2: Course | None,
         time_slot: TimeSlot,
         total_courses: int,
+        course_id: str,
     ) -> CreateCourseResponseDto:
         message = _INSUFFICIENT_MESSAGE if total_courses < 3 else None
         sub_courses = [
             self._to_course_dto(c, time_slot) for c in [sub1, sub2] if c is not None
         ]
         return CreateCourseResponseDto(
+            course_id=course_id,
             main_course=self._to_course_dto(main, time_slot) if main else None,
             sub_courses=sub_courses,
             message=message,
