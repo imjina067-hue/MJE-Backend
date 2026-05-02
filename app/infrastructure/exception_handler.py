@@ -7,6 +7,9 @@ from fastapi.responses import JSONResponse
 from app.domains.courses.domain.exception import (
     InvalidEventNameException as CoursesInvalidEventNameException,
 )
+from app.infrastructure.api.domain.exception import (
+    InvalidEventNameException as ExportInvalidEventNameException,
+)
 from app.domains.home.domain.exception import (
     InvalidEventNameException as HomeInvalidEventNameException,
 )
@@ -25,9 +28,10 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(CoursesInvalidEventNameException)
     @app.exception_handler(HomeInvalidEventNameException)
+    @app.exception_handler(ExportInvalidEventNameException)
     async def invalid_event_name_handler(
         request: Request,
-        exc: CoursesInvalidEventNameException | HomeInvalidEventNameException,
+        exc: CoursesInvalidEventNameException | HomeInvalidEventNameException | ExportInvalidEventNameException,
     ) -> JSONResponse:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 

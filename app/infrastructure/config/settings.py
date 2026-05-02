@@ -20,6 +20,13 @@ class Settings(BaseSettings):
 
     CORS_ORIGINS: list[str] = []
 
+    SMTP_HOST: str | None = None
+    SMTP_PORT: int = 587
+    SMTP_USER: str | None = None
+    SMTP_PASSWORD: str | None = None
+    SMTP_FROM: str | None = None
+    SERVICE_NAME: str = "MJE"
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
