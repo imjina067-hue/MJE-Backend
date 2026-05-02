@@ -8,7 +8,7 @@ from app.infrastructure.api.domain.exception import InvalidEventNameException
 
 @dataclass(frozen=True)
 class EventName:
-    ALLOWED: ClassVar[FrozenSet[str]] = frozenset({"course_export"})
+    ALLOWED: ClassVar[FrozenSet[str]] = frozenset({"course_export", "course_send"})
 
     value: str
 
