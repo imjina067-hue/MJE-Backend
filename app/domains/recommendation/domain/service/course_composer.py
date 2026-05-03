@@ -18,8 +18,8 @@ CATEGORY_TRANSITIONS: dict[str, list[str]] = {
     "activity": ["cafe", "restaurant", "walk"],
 }
 
-PRIMARY_POOL_LIMIT = 5
-FALLBACK_POOL_LIMIT = 8
+PRIMARY_POOL_LIMIT = 8
+FALLBACK_POOL_LIMIT = 12
 
 
 class CourseComposer:

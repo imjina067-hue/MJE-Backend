@@ -22,12 +22,14 @@ class RuleScorer:
         sorted_courses = sorted(courses, key=lambda c: c.total_score, reverse=True)
         main = self._assign_type(sorted_courses[0], "main")
 
-        remaining = [course for course in sorted_courses[1:] if course is not main]
-        sub1 = self._pick_diverse_course(main, remaining, "sub1")
+        remaining = sorted_courses[1:]
+        sub1_candidates = [c for c in remaining if not self._is_too_similar(main, c)]
+        sub1 = self._pick_diverse_course(main, sub1_candidates, "sub1")
 
-        remaining = [course for course in remaining if course is not sub1]
-        anchors = [course for course in [main, sub1] if course is not None]
-        sub2 = self._pick_diverse_course_multi_anchor(anchors, remaining, "sub2")
+        remaining = [c for c in remaining if c is not sub1]
+        anchors = [c for c in [main, sub1] if c is not None]
+        sub2_candidates = [c for c in remaining if not any(self._is_too_similar(a, c) for a in anchors)]
+        sub2 = self._pick_diverse_course_multi_anchor(anchors, sub2_candidates, "sub2")
 
         return main, sub1, sub2
 
@@ -81,6 +83,10 @@ class RuleScorer:
         worst_penalty = max(penalties)
         total_penalty = sum(penalties)
         return (-worst_penalty, -total_penalty, candidate.total_score)
+
+    def _is_too_similar(self, anchor: Course, candidate: Course) -> bool:
+        place_overlap = len(anchor.place_name_set() & candidate.place_name_set())
+        return place_overlap >= 2 or anchor.first_place_name() == candidate.first_place_name()
 
     def _overlap_penalty(self, anchor: Course, candidate: Course) -> float:
         anchor_places = anchor.place_name_set()
