@@ -28,7 +28,7 @@ class RuleScorer:
         remaining = [c for c in remaining if c is not sub1]
         anchors = [c for c in [main, sub1] if c is not None]
         sub2_candidates = [c for c in remaining if not any(self._is_too_similar(a, c) for a in anchors)]
-        sub2 = self._pick_diverse_course_multi_anchor(anchors, sub2_candidates, "sub2")
+        sub2 = self._pick_sub2_course(anchors, sub2_candidates)
 
         return main, sub1, sub2
 
@@ -51,52 +51,21 @@ class RuleScorer:
         best = max(pool, key=lambda c: self._sub1_sort_key(main, c))
         return self._assign_type(best, "sub1")
 
-    def _pick_diverse_course(
-        self,
-        anchor: Course,
-        candidates: list[Course],
-        course_type: str,
-    ) -> Course | None:
+    def _pick_sub2_course(self, anchors: list[Course], candidates: list[Course]) -> Course | None:
         if not candidates:
             return None
+        strict = [c for c in candidates if not any(self._is_same_activity_type(a, c) for a in anchors)]
+        pool = strict if strict else candidates
+        best = max(pool, key=lambda c: self._sub2_sort_key(anchors, c))
+        return self._assign_type(best, "sub2")
 
-        best = max(
-            candidates,
-            key=lambda candidate: self._diversity_sort_key(anchor, candidate),
-        )
-        return self._assign_type(best, course_type)
-
-    def _pick_diverse_course_multi_anchor(
-        self,
-        anchors: list[Course],
-        candidates: list[Course],
-        course_type: str,
-    ) -> Course | None:
-        if not candidates:
-            return None
-
-        best = max(
-            candidates,
-            key=lambda candidate: self._multi_anchor_diversity_key(anchors, candidate),
-        )
-        return self._assign_type(best, course_type)
-
-    def _diversity_sort_key(self, anchor: Course, candidate: Course) -> tuple[float, float]:
-        overlap_penalty = self._overlap_penalty(anchor, candidate)
-        return (-overlap_penalty, candidate.total_score)
-
-    def _multi_anchor_diversity_key(
-        self,
-        anchors: list[Course],
-        candidate: Course,
-    ) -> tuple[float, float]:
-        if not anchors:
-            return (0.0, candidate.total_score)
-
-        penalties = [self._overlap_penalty(anchor, candidate) for anchor in anchors]
-        worst_penalty = max(penalties)
+    def _sub2_sort_key(self, anchors: list[Course], candidate: Course) -> tuple:
+        different_from_all = int(all(a.category_order() != candidate.category_order() for a in anchors))
+        different_from_any = int(any(a.category_order() != candidate.category_order() for a in anchors))
+        penalties = [self._overlap_penalty(a, candidate) for a in anchors]
+        worst_penalty = max(penalties) if penalties else 0.0
         total_penalty = sum(penalties)
-        return (-worst_penalty, -total_penalty, candidate.total_score)
+        return (different_from_all, different_from_any, -worst_penalty, -total_penalty, candidate.total_score)
 
     def _sub1_sort_key(self, main: Course, candidate: Course) -> tuple:
         different_pattern = 0 if main.category_order() == candidate.category_order() else 1
