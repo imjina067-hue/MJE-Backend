@@ -25,6 +25,8 @@ class Place:
     rating: float = 0.0
     has_parking: bool = False
     business_close_time: Optional[time] = None
+    score: float = 0.0
+    is_franchise: bool = False
 
     def is_open_at_slot_start(self, slot_start: time) -> bool:
         """영업 종료가 슬롯 시작 기준 1시간 이내이면 False"""
@@ -37,19 +39,6 @@ class Place:
         close_min = close.hour * 60 + close.minute
         start_min = slot_start.hour * 60 + slot_start.minute
         return (close_min - start_min) > 60
-
-    def calculate_total_score(self, total_candidates: int) -> float:
-        return self._search_rank_score(total_candidates) + self._rating_score()
-
-    def _search_rank_score(self, total_candidates: int) -> float:
-        if total_candidates <= 0 or self.search_rank <= 0:
-            return 0.0
-        return (total_candidates - self.search_rank + 1) / total_candidates * 100
-
-    def _rating_score(self) -> float:
-        if self.rating <= 0:
-            return 0.0
-        return (self.rating / 5.0) * 100
 
     def distance_to_meters(self, other: Place) -> float:
         """Haversine 공식으로 두 장소 간 거리(m) 계산"""

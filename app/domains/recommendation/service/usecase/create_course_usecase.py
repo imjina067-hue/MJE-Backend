@@ -9,6 +9,11 @@ from datetime import time
 from app.domains.recommendation.domain.entity.course import Course
 from app.domains.recommendation.domain.entity.place import Place
 from app.domains.recommendation.domain.service.course_composer import CourseComposer
+from app.domains.recommendation.domain.service.recommendation_config import (
+    ACTIVITY_FALLBACK_SEARCH_KEYWORDS,
+    CATEGORY_SEARCH_KEYWORDS,
+    MIN_ACTIVITY_CANDIDATES,
+)
 from app.domains.recommendation.domain.service.rule_scorer import RuleScorer
 from app.domains.recommendation.domain.service.time_slot_filter import TimeSlotFilter
 from app.domains.recommendation.domain.value_object.time_slot import TimeSlot
@@ -25,8 +30,8 @@ from app.domains.recommendation.service.port.naver_map_port import NaverMapPort
 from app.domains.recommendation.service.port.naver_search_port import NaverSearchPort
 
 _INSUFFICIENT_MESSAGE = (
-    "선택한 조건에 맞는 데이트 코스가 부족합니다. "
-    "시간대나 지역을 변경하면 더 많은 추천을 받을 수 있습니다."
+    "해당 조건에 맞는 추천 후보가 부족합니다. "
+    "지역 또는 이동수단을 변경해 다시 시도해주세요."
 )
 
 _BRAND_CAP = 2
@@ -38,36 +43,32 @@ _IMAGE_HARD_EXCLUDE_KEYWORDS = frozenset(
 )
 _BOLD_RE = re.compile(r"</?b>")
 
-ALL_CATEGORIES = ["restaurant", "cafe", "walk", "activity"]
+ALL_CATEGORIES = ["restaurant", "cafe", "activity"]
 
 _CATEGORY_SIGNALS: dict[str, tuple[str, ...]] = {
     "restaurant": ("음식", "식당", "맛집", "요리", "주점", "술집", "포차", "바", "레스토랑"),
-    "cafe": ("카페", "커피", "디저트", "베이커리", "브런치"),
-    "walk": ("공원", "산책", "거리", "둘레길", "하천", "호수", "전망", "야경", "광장"),
-    "activity": ("전시", "체험", "공방", "영화", "볼링", "방탈출", "노래방", "갤러리", "스튜디오"),
+    "cafe": ("카페", "커피", "디저트", "베이커리", "브런치", "와인바", "칵테일바"),
+    "activity": ("전시", "체험", "공방", "영화", "볼링", "방탈출", "갤러리", "공원", "산책", "클라이밍", "편집숍", "홀덤"),
 }
 
 CATEGORY_IMAGE_SUFFIX = {
     "restaurant": "음식 사진",
     "cafe": "카페 외관",
-    "walk": "산책로",
     "activity": "체험",
-}
-
-CATEGORY_NAVER_KEYWORD = {
-    "restaurant": "맛집 음식점",
-    "cafe": "카페",
-    "walk": "산책로 공원",
-    "activity": "이색데이트 체험",
 }
 
 # Datalab 쿼리용: {area} + 아래 키워드 조합으로 카테고리별 인기도 수집
 CATEGORY_TREND_KEYWORD = {
     "restaurant": "맛집",
     "cafe": "카페",
-    "walk": "산책",
     "activity": "이색체험",
 }
+
+_MAJOR_FRANCHISE: frozenset[str] = frozenset({
+    "스타벅스", "투썸플레이스", "이디야", "메가커피", "컴포즈커피", "빽다방",
+    "폴바셋", "탐앤탐스", "할리스", "커피빈", "파스쿠찌", "카페베네",
+    "더벤티", "엔젤리너스", "공차", "던킨",
+})
 
 
 logger = logging.getLogger(__name__)
@@ -99,7 +100,7 @@ class CreateCourseUseCase:
         category_trends = await self._collect_category_trends(dto.area)
 
         # 2. 트렌드 기반 장소 후보 수집 (트렌딩 카테고리 → 더 많은 후보)
-        places_by_category = await self._collect_places(dto.area, category_trends)
+        places_by_category = await self._collect_places(dto.area, category_trends, time_slot)
 
         # 3. 시간대 필터링 (Domain Service)
         filtered = {
@@ -112,17 +113,17 @@ class CreateCourseUseCase:
             for place in places:
                 place.image_url = await self._fetch_image(place, cat)
 
-        # 5. 수집된 트렌드 점수 반영 (rating에 가산 → scoring 기준으로만 활용)
-        self._apply_trend_scores(filtered, category_trends)
-
-        # 6. 차량 이동 시 주차 정보 조회
+        # 5. 차량 이동 시 주차 정보 조회
         if transport.requires_parking_check():
             for places in filtered.values():
                 for place in places:
                     place.has_parking = await self._search.search_parking(place.road_address)
 
-        # 7. 코스 조합 (Domain Service)
-        courses = self._composer.compose(filtered, time_slot, transport, start_time)
+        # 6. 장소 점수 계산
+        self._scorer.apply_scores(filtered, category_trends, time_slot, transport)
+
+        # 7. 코스 조합 — 가중 랜덤 선택
+        courses = self._composer.compose(filtered, time_slot, transport)
         self._log_recommendation_diagnostics(
             dto=dto,
             time_slot=time_slot,
@@ -132,7 +133,6 @@ class CreateCourseUseCase:
             courses=courses,
         )
 
-        # 8. Rule Scoring으로 메인/서브 순위 결정
         main, sub1, sub2 = self._scorer.rank_courses(courses)
 
         # 9. 최종 코스에 한해 Naver 지도 API로 실제 이동소요시간·동선 보강
@@ -168,18 +168,46 @@ class CreateCourseUseCase:
     # ── 장소 수집 ─────────────────────────────────────────────────────────────
 
     async def _collect_places(
-        self, area: str, category_trends: dict[str, float]
+        self, area: str, category_trends: dict[str, float], time_slot: TimeSlot
     ) -> dict[str, list[Place]]:
         """트렌드 점수가 높은 카테고리일수록 더 많은 후보 수집 (10~40개)"""
         result: dict[str, list[Place]] = {}
         for cat in ALL_CATEGORIES:
             trend_score = category_trends.get(cat, 0.0)
             display = max(10, min(40, int(20 + trend_score * 20)))
-            keyword = CATEGORY_NAVER_KEYWORD[cat]
-            raw = await self._search.search_places(f"{area} {keyword}", cat, display=display)
+            raw: list[dict] = []
+            for kw in CATEGORY_SEARCH_KEYWORDS[cat][time_slot.value]:
+                items = await self._search.search_places(f"{area} {kw}", cat, display=display)
+                raw.extend(items)
             candidates = [self._to_place(item, cat, rank) for rank, item in enumerate(raw, 1)]
-            result[cat] = self._diversify_places(self._sanitize_places(area, cat, candidates))
+            sanitized = self._sanitize_places(area, cat, candidates)
+
+            if cat == "activity" and len(sanitized) < MIN_ACTIVITY_CANDIDATES:
+                fallback_raw = await self._collect_activity_fallback_places(
+                    area=area,
+                    time_slot=time_slot,
+                    display=max(8, display // 2),
+                )
+                fallback_candidates = [
+                    self._to_place(item, cat, rank)
+                    for rank, item in enumerate(fallback_raw, len(candidates) + 1)
+                ]
+                sanitized = self._sanitize_places(area, cat, candidates + fallback_candidates)
+
+            result[cat] = self._diversify_places(sanitized)
         return result
+
+    async def _collect_activity_fallback_places(
+        self,
+        area: str,
+        time_slot: TimeSlot,
+        display: int,
+    ) -> list[dict]:
+        raw: list[dict] = []
+        for kw in ACTIVITY_FALLBACK_SEARCH_KEYWORDS.get(time_slot.value, []):
+            items = await self._search.search_places(f"{area} {kw}", "activity", display=display)
+            raw.extend(items)
+        return raw
 
     def _to_place(self, item: dict, category: str, rank: int) -> Place:
         name = _BOLD_RE.sub("", html.unescape(item.get("title", "")))
@@ -196,6 +224,7 @@ class CreateCourseUseCase:
 
         has_parking = "주차" in desc or "주차" in raw_category
 
+        brand = self._extract_brand(name)
         return Place(
             name=name,
             area=area_name,
@@ -210,6 +239,7 @@ class CreateCourseUseCase:
             brief_description=desc[:60] if desc else "",
             telephone=item.get("telephone", ""),
             has_parking=has_parking,
+            is_franchise=(brand in _MAJOR_FRANCHISE),
         )
 
     def _sanitize_places(self, requested_area: str, category: str, places: list[Place]) -> list[Place]:
@@ -256,10 +286,11 @@ class CreateCourseUseCase:
         return sanitized
 
     def _diversify_places(self, places: list[Place]) -> list[Place]:
+        ordered = [p for p in places if not p.is_franchise] + [p for p in places if p.is_franchise]
         brand_counts: dict[str, int] = {}
         type_counts: dict[str, int] = {}
         result: list[Place] = []
-        for place in places:
+        for place in ordered:
             brand = self._extract_brand(place.name)
             place_type = place.keywords[-1] if place.keywords else ""
             if brand_counts.get(brand, 0) >= _BRAND_CAP:
@@ -328,6 +359,8 @@ class CreateCourseUseCase:
         return normalized_name, normalized_address
 
     def _matches_category_signal(self, category: str, place: Place) -> bool:
+        if category == "activity":
+            return True
         signals = _CATEGORY_SIGNALS.get(category, ())
         if not signals:
             return True
@@ -362,7 +395,17 @@ class CreateCourseUseCase:
     async def _fetch_image(self, place: Place, category: str) -> str | None:
         suffix = CATEGORY_IMAGE_SUFFIX[category]
         query = f"{place.area} {place.name} {suffix}"
-        images = await self._search.search_images(query)
+        try:
+            images = await self._search.search_images(query)
+        except Exception as exc:
+            logger.warning(
+                "recommendation.image_lookup_failed category=%s place=%s query=%s error=%s",
+                category,
+                place.name,
+                query,
+                exc,
+            )
+            return None
         best_url: str | None = None
         best_score: int | None = None
         for img in images:
@@ -413,19 +456,6 @@ class CreateCourseUseCase:
             score -= 4
 
         return score if score > 0 else None
-
-    # ── Datalab 트렌드 반영 ───────────────────────────────────────────────────
-
-    def _apply_trend_scores(
-        self,
-        places_by_category: dict[str, list[Place]],
-        category_trends: dict[str, float],
-    ) -> None:
-        """사전 수집된 트렌드 점수를 카테고리 단위로 장소 rating에 반영 (정렬 기준으로만 사용)"""
-        for cat, places in places_by_category.items():
-            category_trend = category_trends.get(cat, 0.0)
-            for place in places:
-                place.rating = min(5.0, place.rating + category_trend * 2.5)
 
     # ── 지도 API 동선 보강 ─────────────────────────────────────────────────────
 

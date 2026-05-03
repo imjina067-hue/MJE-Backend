@@ -8,7 +8,7 @@ from app.domains.recommendation.domain.entity.place import Place
 CATEGORY_DURATION_MINUTES: dict[str, int] = {
     "restaurant": 90,
     "cafe": 60,
-    "walk": 90,
+    "walk": 45,
     "activity": 120,
 }
 
