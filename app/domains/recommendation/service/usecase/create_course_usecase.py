@@ -167,11 +167,11 @@ class CreateCourseUseCase:
     async def _collect_places(
         self, area: str, category_trends: dict[str, float]
     ) -> dict[str, list[Place]]:
-        """트렌드 점수가 높은 카테고리일수록 더 많은 후보 수집 (5~20개)"""
+        """트렌드 점수가 높은 카테고리일수록 더 많은 후보 수집 (10~40개)"""
         result: dict[str, list[Place]] = {}
         for cat in ALL_CATEGORIES:
             trend_score = category_trends.get(cat, 0.0)
-            display = max(5, min(20, int(10 + trend_score * 10)))
+            display = max(10, min(40, int(20 + trend_score * 20)))
             keyword = CATEGORY_NAVER_KEYWORD[cat]
             raw = await self._search.search_places(f"{area} {keyword}", cat, display=display)
             candidates = [self._to_place(item, cat, rank) for rank, item in enumerate(raw, 1)]
