@@ -10,7 +10,9 @@ from app.domains.recommendation.domain.entity.course import Course
 from app.domains.recommendation.domain.entity.place import Place
 from app.domains.recommendation.domain.service.course_composer import CourseComposer
 from app.domains.recommendation.domain.service.recommendation_config import (
-    ACTIVITY_FALLBACK_SEARCH_KEYWORDS,
+    ACTIVITY_SUBTYPE_FALLBACK_SEARCH_KEYWORDS,
+    ACTIVITY_SUBTYPE_SEARCH_KEYWORDS,
+    ACTIVITY_SUBTYPE_SIGNALS,
     CATEGORY_SEARCH_KEYWORDS,
     MIN_ACTIVITY_CANDIDATES,
     TOP_N_CANDIDATES,
@@ -195,6 +197,13 @@ class CreateCourseUseCase:
         for cat in ALL_CATEGORIES:
             trend_score = category_trends.get(cat, 0.0)
             display = max(10, min(40, int(20 + trend_score * 20)))
+            if cat == "activity":
+                result[cat] = await self._collect_activity_places(
+                    area=area,
+                    time_slot=time_slot,
+                    display=display,
+                )
+                continue
             raw: list[dict] = []
             target_count = TOP_N_CANDIDATES if cat != "activity" else max(
                 TOP_N_CANDIDATES,
@@ -254,19 +263,110 @@ class CreateCourseUseCase:
             )
         return result
 
+    async def _collect_activity_places(
+        self,
+        area: str,
+        time_slot: TimeSlot,
+        display: int,
+    ) -> list[Place]:
+        raw: list[tuple[dict, str]] = []
+        target_count = max(TOP_N_CANDIDATES, MIN_ACTIVITY_CANDIDATES)
+        subtype_keywords = ACTIVITY_SUBTYPE_SEARCH_KEYWORDS.get(time_slot.value, {})
+
+        for subtype, keywords in subtype_keywords.items():
+            for kw in keywords:
+                query = f"{area} {kw}"
+                items = await self._search_places_cached(query, "activity", display)
+                raw.extend((item, subtype) for item in items)
+                interim_places = [
+                    self._to_place(item, "activity", rank, subtype_hint=subtype_hint)
+                    for rank, (item, subtype_hint) in enumerate(raw, 1)
+                ]
+                interim_sanitized = self._sanitize_places(area, "activity", interim_places)
+                self._log_collection_query(
+                    area=area,
+                    category="activity",
+                    query=query,
+                    fetched_count=len(items),
+                    accumulated_count=len(raw),
+                    sanitized_count=len(interim_sanitized),
+                    target_count=target_count,
+                    subtype=subtype,
+                )
+                if len(interim_sanitized) >= target_count:
+                    break
+            if len(raw) >= target_count:
+                break
+
+        candidates = [
+            self._to_place(item, "activity", rank, subtype_hint=subtype)
+            for rank, (item, subtype) in enumerate(raw, 1)
+        ]
+        sanitized = self._sanitize_places(area, "activity", candidates)
+
+        if len(sanitized) < MIN_ACTIVITY_CANDIDATES:
+            fallback_candidates = await self._collect_activity_fallback_places(
+                area=area,
+                time_slot=time_slot,
+                display=max(8, display // 2),
+                start_rank=len(candidates) + 1,
+            )
+            sanitized = self._sanitize_places(area, "activity", candidates + fallback_candidates)
+            logger.info(
+                "recommendation.activity_fallback area=%s time_slot=%s fetched=%s sanitized=%s target=%s",
+                area,
+                time_slot.value,
+                len(fallback_candidates),
+                len(sanitized),
+                MIN_ACTIVITY_CANDIDATES,
+            )
+
+        diversified = self._diversify_places(sanitized)
+        logger.info(
+            "recommendation.category_pool area=%s category=%s time_slot=%s raw=%s sanitized=%s diversified=%s samples=%s subtypes=%s",
+            area,
+            "activity",
+            time_slot.value,
+            len(raw),
+            len(sanitized),
+            len(diversified),
+            self._sample_place_names(diversified),
+            self._sample_activity_subtypes(diversified),
+        )
+        return diversified
+
     async def _collect_activity_fallback_places(
         self,
         area: str,
         time_slot: TimeSlot,
         display: int,
+        start_rank: int,
     ) -> list[dict]:
-        raw: list[dict] = []
-        for kw in ACTIVITY_FALLBACK_SEARCH_KEYWORDS.get(time_slot.value, []):
-            items = await self._search_places_cached(f"{area} {kw}", "activity", display)
-            raw.extend(items)
+        raw: list[tuple[dict, str]] = []
+        subtype_keywords = ACTIVITY_SUBTYPE_FALLBACK_SEARCH_KEYWORDS.get(time_slot.value, {})
+        for subtype, keywords in subtype_keywords.items():
+            for kw in keywords:
+                query = f"{area} {kw}"
+                items = await self._search_places_cached(query, "activity", display)
+                raw.extend((item, subtype) for item in items)
+                self._log_collection_query(
+                    area=area,
+                    category="activity",
+                    query=query,
+                    fetched_count=len(items),
+                    accumulated_count=len(raw),
+                    sanitized_count=len(raw),
+                    target_count=MIN_ACTIVITY_CANDIDATES,
+                    subtype=subtype,
+                )
+                if len(raw) >= MIN_ACTIVITY_CANDIDATES:
+                    break
             if len(raw) >= MIN_ACTIVITY_CANDIDATES:
                 break
-        return raw
+        return [
+            self._to_place(item, "activity", rank, subtype_hint=subtype)
+            for rank, (item, subtype) in enumerate(raw, start_rank)
+        ]
 
     async def _search_places_cached(
         self,
@@ -283,7 +383,7 @@ class CreateCourseUseCase:
         self._place_search_cache[cache_key] = items
         return items
 
-    def _to_place(self, item: dict, category: str, rank: int) -> Place:
+    def _to_place(self, item: dict, category: str, rank: int, subtype_hint: str | None = None) -> Place:
         name = _BOLD_RE.sub("", html.unescape(item.get("title", "")))
         desc = html.unescape(item.get("description", ""))
         road_addr = item.get("roadAddress", "")
@@ -299,6 +399,12 @@ class CreateCourseUseCase:
         has_parking = "주차" in desc or "주차" in raw_category
 
         brand = self._extract_brand(name)
+        activity_subtype = self._infer_activity_subtype(
+            name=name,
+            description=desc,
+            keywords=keywords,
+            subtype_hint=subtype_hint,
+        )
         return Place(
             name=name,
             area=area_name,
@@ -309,12 +415,29 @@ class CreateCourseUseCase:
             longitude=lng,
             search_rank=rank,
             keywords=keywords,
+            activity_subtype=activity_subtype,
             main_description=desc,
             brief_description=desc[:60] if desc else "",
             telephone=item.get("telephone", ""),
             has_parking=has_parking,
             is_franchise=(brand in _MAJOR_FRANCHISE),
         )
+
+    def _infer_activity_subtype(
+        self,
+        name: str,
+        description: str,
+        keywords: list[str],
+        subtype_hint: str | None,
+    ) -> str | None:
+        if subtype_hint is None:
+            return None
+
+        text = self._normalize_text(" ".join([name, description, " ".join(keywords)]))
+        for subtype, signals in ACTIVITY_SUBTYPE_SIGNALS.items():
+            if any(self._normalize_text(signal) in text for signal in signals):
+                return subtype
+        return subtype_hint
 
     def _sanitize_places(self, requested_area: str, category: str, places: list[Place]) -> list[Place]:
         sanitized: list[Place] = []
@@ -467,6 +590,9 @@ class CreateCourseUseCase:
     def _sample_place_names(self, places: list[Place], limit: int = 5) -> list[str]:
         return [place.name for place in places[:limit]]
 
+    def _sample_activity_subtypes(self, places: list[Place], limit: int = 5) -> list[str]:
+        return [place.activity_subtype or "unknown" for place in places[:limit]]
+
     def _log_collection_query(
         self,
         area: str,
@@ -476,11 +602,13 @@ class CreateCourseUseCase:
         accumulated_count: int,
         sanitized_count: int,
         target_count: int,
+        subtype: str | None = None,
     ) -> None:
         logger.info(
-            "recommendation.collect_query area=%s category=%s query=%s fetched=%s accumulated=%s sanitized=%s target=%s",
+            "recommendation.collect_query area=%s category=%s subtype=%s query=%s fetched=%s accumulated=%s sanitized=%s target=%s",
             area,
             category,
+            subtype,
             query,
             fetched_count,
             accumulated_count,
