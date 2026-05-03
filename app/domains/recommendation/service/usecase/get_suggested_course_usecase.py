@@ -53,7 +53,7 @@ class GetSuggestedCourseUseCase:
 
     def get_image(self, course_id: str) -> CourseImageDto:
         course = self._get_course(course_id)
-        image_url = next(
+        image_url = course.image_url or next(
             (p.image_url for p in course.places if p.image_url),
             None,
         )
@@ -119,7 +119,7 @@ class GetSuggestedCourseUseCase:
         idx: int,
     ) -> OtherCourseItemDto:
         locations = list(dict.fromkeys(p.area for p in course.places))
-        image_url = next((p.image_url for p in course.places if p.image_url), None)
+        image_url = course.image_url or next((p.image_url for p in course.places if p.image_url), None)
         description = " -> ".join(p.name for p in course.places[:3])
         return OtherCourseItemDto(
             id=course.course_id,

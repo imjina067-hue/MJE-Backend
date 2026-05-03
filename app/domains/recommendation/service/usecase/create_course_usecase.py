@@ -42,6 +42,15 @@ _IMAGE_EXCLUDE_KEYWORDS = frozenset({"협찬", "광고", "제공받아", "부동
 _IMAGE_HARD_EXCLUDE_KEYWORDS = frozenset(
     {"map", "logo", "banner", "poster", "ad", "guide", "capture"}
 )
+_IMAGE_STOCK_EXCLUDE_KEYWORDS = frozenset(
+    {"unsplash", "pexels", "pixabay", "shutterstock", "stock"}
+)
+_IMAGE_PEOPLE_EXCLUDE_KEYWORDS = frozenset(
+    {"face", "selfie", "profile", "portrait", "woman", "man", "person", "people", "모델", "인물", "여자", "남자"}
+)
+_IMAGE_SCENIC_EXCLUDE_KEYWORDS = frozenset(
+    {"lake", "forest", "mountain", "river", "canoe", "camping", "nature", "landscape", "호수", "숲", "산", "강", "캠핑"}
+)
 _BOLD_RE = re.compile(r"</?b>")
 
 ALL_CATEGORIES = ["restaurant", "cafe", "activity"]
@@ -460,6 +469,8 @@ class CreateCourseUseCase:
             return None
         if any(keyword in combined for keyword in _IMAGE_HARD_EXCLUDE_KEYWORDS):
             return None
+        if any(keyword in combined for keyword in _IMAGE_STOCK_EXCLUDE_KEYWORDS):
+            return None
 
         score = 0
         place_name = self._normalize_text(place.name)
@@ -544,8 +555,45 @@ class CreateCourseUseCase:
             course_type=course.course_type,
             transport=course.transport,
             total_duration_minutes=course.total_duration_minutes(),
+            image_url=self._select_course_cover_image(course),
             places=places,
         )
+
+    def _select_course_cover_image(self, course: Course) -> str | None:
+        ranked_candidates: list[tuple[int, str]] = []
+        has_food_or_cafe = any(cp.place.category in {"restaurant", "cafe"} for cp in course.places)
+
+        for cp in course.places:
+            image_url = cp.place.image_url
+            if not image_url:
+                continue
+
+            score = 6
+            if cp.place.category == "restaurant":
+                score = 12
+            elif cp.place.category == "cafe":
+                score = 10
+
+            combined = self._normalize_text(
+                " ".join([image_url, cp.place.name, cp.place.main_description, " ".join(cp.place.keywords)])
+            )
+            if any(keyword in combined for keyword in _IMAGE_STOCK_EXCLUDE_KEYWORDS):
+                score -= 10
+            if any(keyword in combined for keyword in _IMAGE_PEOPLE_EXCLUDE_KEYWORDS):
+                score -= 8
+            if has_food_or_cafe and cp.place.category == "activity" and any(
+                keyword in combined for keyword in _IMAGE_SCENIC_EXCLUDE_KEYWORDS
+            ):
+                score -= 10
+
+            ranked_candidates.append((score, image_url))
+
+        if not ranked_candidates:
+            return None
+
+        ranked_candidates.sort(key=lambda item: item[0], reverse=True)
+        best_score, best_url = ranked_candidates[0]
+        return best_url if best_score > 0 else None
 
     # ── 유틸 ──────────────────────────────────────────────────────────────────
 

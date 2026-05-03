@@ -32,6 +32,7 @@ class CourseResponseItem(BaseModel):
     courseType: str
     transport: str
     totalDurationMinutes: int
+    imageUrl: Optional[str]
     places: list[PlaceResponseItem]
 
 
@@ -59,6 +60,7 @@ class CreateCourseResponseForm(BaseModel):
             courseType=course.course_type,
             transport=course.transport,
             totalDurationMinutes=course.total_duration_minutes,
+            imageUrl=course.image_url,
             places=[cls._map_place(p) for p in course.places],
         )
 
