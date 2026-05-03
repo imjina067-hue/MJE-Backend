@@ -192,9 +192,21 @@ class CreateCourseUseCase:
                 MIN_ACTIVITY_CANDIDATES,
             )
             for kw in CATEGORY_SEARCH_KEYWORDS[cat][time_slot.value]:
-                items = await self._search_places_cached(f"{area} {kw}", cat, display)
+                query = f"{area} {kw}"
+                items = await self._search_places_cached(query, cat, display)
                 raw.extend(items)
-                if len(self._sanitize_places(area, cat, [self._to_place(item, cat, rank) for rank, item in enumerate(raw, 1)])) >= target_count:
+                interim_places = [self._to_place(item, cat, rank) for rank, item in enumerate(raw, 1)]
+                interim_sanitized = self._sanitize_places(area, cat, interim_places)
+                self._log_collection_query(
+                    area=area,
+                    category=cat,
+                    query=query,
+                    fetched_count=len(items),
+                    accumulated_count=len(raw),
+                    sanitized_count=len(interim_sanitized),
+                    target_count=target_count,
+                )
+                if len(interim_sanitized) >= target_count:
                     break
             candidates = [self._to_place(item, cat, rank) for rank, item in enumerate(raw, 1)]
             sanitized = self._sanitize_places(area, cat, candidates)
@@ -210,8 +222,27 @@ class CreateCourseUseCase:
                     for rank, item in enumerate(fallback_raw, len(candidates) + 1)
                 ]
                 sanitized = self._sanitize_places(area, cat, candidates + fallback_candidates)
+                logger.info(
+                    "recommendation.activity_fallback area=%s time_slot=%s fetched=%s sanitized=%s target=%s",
+                    area,
+                    time_slot.value,
+                    len(fallback_raw),
+                    len(sanitized),
+                    MIN_ACTIVITY_CANDIDATES,
+                )
 
-            result[cat] = self._diversify_places(sanitized)
+            diversified = self._diversify_places(sanitized)
+            result[cat] = diversified
+            logger.info(
+                "recommendation.category_pool area=%s category=%s time_slot=%s raw=%s sanitized=%s diversified=%s samples=%s",
+                area,
+                cat,
+                time_slot.value,
+                len(raw),
+                len(sanitized),
+                len(diversified),
+                self._sample_place_names(diversified),
+            )
         return result
 
     async def _collect_activity_fallback_places(
@@ -424,6 +455,30 @@ class CreateCourseUseCase:
     def _normalize_text(self, value: str) -> str:
         return " ".join(value.lower().split())
 
+    def _sample_place_names(self, places: list[Place], limit: int = 5) -> list[str]:
+        return [place.name for place in places[:limit]]
+
+    def _log_collection_query(
+        self,
+        area: str,
+        category: str,
+        query: str,
+        fetched_count: int,
+        accumulated_count: int,
+        sanitized_count: int,
+        target_count: int,
+    ) -> None:
+        logger.info(
+            "recommendation.collect_query area=%s category=%s query=%s fetched=%s accumulated=%s sanitized=%s target=%s",
+            area,
+            category,
+            query,
+            fetched_count,
+            accumulated_count,
+            sanitized_count,
+            target_count,
+        )
+
     # ── 이미지 ────────────────────────────────────────────────────────────────
 
     async def _fetch_image(self, place: Place, category: str) -> str | None:
@@ -452,6 +507,14 @@ class CreateCourseUseCase:
             if best_score is None or score > best_score:
                 best_score = score
                 best_url = image_url
+        if best_url is None:
+            logger.info(
+                "recommendation.image_missing place=%s category=%s query=%s candidates=%s",
+                place.name,
+                category,
+                query,
+                len(images),
+            )
         return best_url
 
     def _is_valid_image(self, img: dict) -> bool:
