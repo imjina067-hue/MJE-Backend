@@ -231,10 +231,17 @@ class CourseComposer:
         return unique
 
     def _is_near_duplicate(self, a: Course, b: Course) -> bool:
-        return (
-            len(a.place_name_set() & b.place_name_set()) >= 2
-            or a.first_place_name() == b.first_place_name()
-        )
+        place_overlap = len(a.place_name_set() & b.place_name_set())
+        if place_overlap >= 2:
+            return True
+        if a.first_place_name() == b.first_place_name():
+            return True
+        if place_overlap >= 1 and self._category_order(a) == self._category_order(b):
+            return True
+        return False
+
+    def _category_order(self, course: Course) -> tuple[str, ...]:
+        return tuple(cp.place.category for cp in course.places)
 
     def _unique_orders(self, orders: list[list[str]]) -> list[list[str]]:
         seen: set[tuple[str, ...]] = set()
