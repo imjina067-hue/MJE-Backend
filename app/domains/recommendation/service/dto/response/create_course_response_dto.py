@@ -26,6 +26,7 @@ class CourseResultDto:
     transport: str
     total_duration_minutes: int
     title: str
+    description: str
     image_url: Optional[str] = None
     places: list[PlaceResultDto] = field(default_factory=list)
 

@@ -62,8 +62,7 @@ class GetCourseDetailUseCase:
         return course.title
 
     def _build_description(self, course: CourseResultDto) -> str:
-        names = ", ".join(place.name for place in course.places[:3])
-        return names if names else course.course_type
+        return course.description
 
     def _build_location_summary(self, course: CourseResultDto) -> str:
         areas = list(dict.fromkeys(place.area for place in course.places if place.area))
