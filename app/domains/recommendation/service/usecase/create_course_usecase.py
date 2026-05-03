@@ -29,6 +29,9 @@ _INSUFFICIENT_MESSAGE = (
     "시간대나 지역을 변경하면 더 많은 추천을 받을 수 있습니다."
 )
 
+_BRAND_CAP = 2
+_KEYWORD_TYPE_CAP = 3
+
 _IMAGE_EXCLUDE_KEYWORDS = frozenset({"협찬", "광고", "제공받아", "부동산", "분양"})
 _IMAGE_HARD_EXCLUDE_KEYWORDS = frozenset(
     {"map", "logo", "banner", "poster", "ad", "guide", "capture"}
@@ -175,7 +178,7 @@ class CreateCourseUseCase:
             keyword = CATEGORY_NAVER_KEYWORD[cat]
             raw = await self._search.search_places(f"{area} {keyword}", cat, display=display)
             candidates = [self._to_place(item, cat, rank) for rank, item in enumerate(raw, 1)]
-            result[cat] = self._sanitize_places(area, cat, candidates)
+            result[cat] = self._diversify_places(self._sanitize_places(area, cat, candidates))
         return result
 
     def _to_place(self, item: dict, category: str, rank: int) -> Place:
@@ -251,6 +254,29 @@ class CreateCourseUseCase:
             )
 
         return sanitized
+
+    def _diversify_places(self, places: list[Place]) -> list[Place]:
+        brand_counts: dict[str, int] = {}
+        type_counts: dict[str, int] = {}
+        result: list[Place] = []
+        for place in places:
+            brand = self._extract_brand(place.name)
+            place_type = place.keywords[-1] if place.keywords else ""
+            if brand_counts.get(brand, 0) >= _BRAND_CAP:
+                continue
+            if place_type and type_counts.get(place_type, 0) >= _KEYWORD_TYPE_CAP:
+                continue
+            brand_counts[brand] = brand_counts.get(brand, 0) + 1
+            if place_type:
+                type_counts[place_type] = type_counts.get(place_type, 0) + 1
+            result.append(place)
+        return result
+
+    def _extract_brand(self, name: str) -> str:
+        parts = name.split()
+        if len(parts) > 1 and any(parts[-1].endswith(s) for s in ("점", "지점", "본점", "직영점")):
+            return " ".join(parts[:-1])
+        return name
 
     def _has_valid_coordinates(self, place: Place) -> bool:
         return not (
