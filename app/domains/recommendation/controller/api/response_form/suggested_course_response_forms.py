@@ -101,6 +101,7 @@ class ActivitiesResponseForm(BaseModel):
 
 class OtherCourseItem(BaseModel):
     id: str
+    courseId: str
     name: str
     description: str
     locations: list[str]
@@ -111,6 +112,7 @@ class OtherCourseItem(BaseModel):
     def from_dto(cls, dto: OtherCourseItemDto) -> OtherCourseItem:
         return cls(
             id=dto.id,
+            courseId=dto.course_id,
             name=dto.name,
             description=dto.description,
             locations=dto.locations,

@@ -123,6 +123,7 @@ class GetSuggestedCourseUseCase:
         description = " -> ".join(p.name for p in course.places[:3])
         return OtherCourseItemDto(
             id=course.course_id,
+            course_id=course.course_id,
             name=course.course_type,
             description=description,
             locations=locations,

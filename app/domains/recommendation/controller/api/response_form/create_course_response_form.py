@@ -36,6 +36,7 @@ class CourseResponseItem(BaseModel):
 
 
 class CreateCourseResponseForm(BaseModel):
+    recommendationId: str
     courseId: str
     mainCourse: Optional[CourseResponseItem]
     subCourses: list[CourseResponseItem]
@@ -44,6 +45,7 @@ class CreateCourseResponseForm(BaseModel):
     @classmethod
     def from_response(cls, dto: CreateCourseResponseDto) -> CreateCourseResponseForm:
         return cls(
+            recommendationId=dto.course_id,
             courseId=dto.course_id,
             mainCourse=cls._map_course(dto.main_course) if dto.main_course else None,
             subCourses=[cls._map_course(c) for c in dto.sub_courses],
