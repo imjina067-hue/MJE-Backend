@@ -265,6 +265,9 @@ class CreateCourseUseCase:
         if not normalized_area:
             return True
 
+        if self._should_relax_area_matching(normalized_area):
+            return True
+
         haystack = self._normalize_text(
             " ".join(
                 part
@@ -276,6 +279,22 @@ class CreateCourseUseCase:
             return False
 
         return all(token in haystack for token in normalized_area.split())
+
+    def _should_relax_area_matching(self, normalized_area: str) -> bool:
+        tokens = normalized_area.split()
+        if not tokens:
+            return True
+
+        if normalized_area in {"서울", "서울시"}:
+            return True
+
+        if len(tokens) == 1:
+            token = tokens[0]
+            administrative_suffixes = ("시", "도", "구", "군", "동", "읍", "면", "리", "가")
+            if not token.endswith(administrative_suffixes):
+                return True
+
+        return False
 
     def _place_dedupe_key(self, place: Place) -> tuple[str, str]:
         normalized_name = self._normalize_text(place.name)
