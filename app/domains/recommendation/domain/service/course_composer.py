@@ -20,6 +20,7 @@ CATEGORY_TRANSITIONS: dict[str, list[str]] = {
 
 PRIMARY_POOL_LIMIT = 8
 FALLBACK_POOL_LIMIT = 12
+TIER_SIZE = 4
 
 
 class CourseComposer:
@@ -158,10 +159,28 @@ class CourseComposer:
         transport: Transport,
         pool_limit: int = PRIMARY_POOL_LIMIT,
     ) -> list[Course]:
-        pools = [places_by_category.get(cat, [])[:pool_limit] for cat in category_order]
-        if any(not pool for pool in pools):
+        full_pools = [places_by_category.get(cat, [])[:pool_limit] for cat in category_order]
+        if any(not pool for pool in full_pools):
             return []
 
+        tier = min(TIER_SIZE, pool_limit)
+        primary = [p[:tier] for p in full_pools]
+
+        pool_variants: list[list[list[Place]]] = [primary]
+        for i, pool in enumerate(full_pools):
+            secondary = pool[tier:]
+            if secondary:
+                variant = [secondary if j == i else primary[j] for j in range(len(full_pools))]
+                pool_variants.append(variant)
+
+        candidates: list[Course] = []
+        for pools in pool_variants:
+            candidates.extend(self._cartesian_build(pools, transport))
+        return candidates
+
+    def _cartesian_build(self, pools: list[list[Place]], transport: Transport) -> list[Course]:
+        if any(not pool for pool in pools):
+            return []
         candidates: list[Course] = []
         for p0 in pools[0]:
             for p1 in (pools[1] if len(pools) > 1 else [None]):
