@@ -29,10 +29,8 @@ class GetSuggestedCourseUseCase:
 
     def get_explain_text(self, course_id: str) -> ExplainTextDto:
         course = self._get_course(course_id)
-        area = course.places[0].area if course.places else ""
-        name = f"{area} {course.course_type}".strip() if area else course.course_type
-        description = " -> ".join(p.name for p in course.places[:4])
-        return ExplainTextDto(name=name, description=description)
+        name = course.title
+        return ExplainTextDto(name=name, description=course.description)
 
     def get_hashtag(self, course_id: str) -> HashtagDto:
         course = self._get_course(course_id)
@@ -53,7 +51,7 @@ class GetSuggestedCourseUseCase:
 
     def get_image(self, course_id: str) -> CourseImageDto:
         course = self._get_course(course_id)
-        image_url = next(
+        image_url = course.image_url or next(
             (p.image_url for p in course.places if p.image_url),
             None,
         )
@@ -119,13 +117,12 @@ class GetSuggestedCourseUseCase:
         idx: int,
     ) -> OtherCourseItemDto:
         locations = list(dict.fromkeys(p.area for p in course.places))
-        image_url = next((p.image_url for p in course.places if p.image_url), None)
-        description = " -> ".join(p.name for p in course.places[:3])
+        image_url = course.image_url or next((p.image_url for p in course.places if p.image_url), None)
         return OtherCourseItemDto(
             id=course.course_id,
             course_id=course.course_id,
-            name=course.course_type,
-            description=description,
+            name=course.title,
+            description=course.description,
             locations=locations,
             duration=course.total_duration_minutes,
             image_url=image_url,

@@ -1,221 +1,222 @@
 from __future__ import annotations
 
-from datetime import time
+import random
 from typing import Optional
 
 from app.domains.recommendation.domain.entity.course import Course
 from app.domains.recommendation.domain.entity.place import Place
+from app.domains.recommendation.domain.service.recommendation_config import (
+    COURSE_PATTERNS,
+    FALLBACK_COURSE_PATTERNS,
+    TOP_N_CANDIDATES,
+)
 from app.domains.recommendation.domain.value_object.time_slot import TimeSlot
 from app.domains.recommendation.domain.value_object.transport import Transport
 
-MEAL_ENTRY_POINTS: list[int] = [11 * 60 + 30, 17 * 60 + 30]  # 11:30, 17:30 in minutes
-
-# 카테고리 전환 규칙 (RECOMMENDATION_SPEC.md §6)
-CATEGORY_TRANSITIONS: dict[str, list[str]] = {
-    "restaurant": ["cafe", "activity", "walk"],
-    "cafe": ["activity", "walk", "restaurant"],
-    "walk": ["cafe", "activity", "restaurant"],
-    "activity": ["cafe", "restaurant", "walk"],
-}
-
-PRIMARY_POOL_LIMIT = 5
-FALLBACK_POOL_LIMIT = 8
-
 
 class CourseComposer:
+    _MAX_PATTERN_ATTEMPTS = 8
+    _MAX_PLACE_ATTEMPTS_PER_PATTERN = 4
 
     def compose(
         self,
         places_by_category: dict[str, list[Place]],
         time_slot: TimeSlot,
         transport: Transport,
-        start_time: time,
+        seed: Optional[int] = None,
     ) -> list[Course]:
-        primary_orders = self._get_category_orders(
-            time_slot,
-            start_time,
-            places_by_category,
-            expanded=False,
-        )
-        primary_courses = self._collect_candidates(
-            places_by_category,
-            primary_orders,
-            transport,
-            pool_limit=PRIMARY_POOL_LIMIT,
-        )
-        unique_primary = self._deduplicate_and_sort(primary_courses)
-        if len(unique_primary) >= 3:
-            return unique_primary
+        rng = random.Random(seed)
 
-        fallback_orders = self._get_category_orders(
-            time_slot,
-            start_time,
-            places_by_category,
-            expanded=True,
-        )
-        fallback_courses = self._collect_candidates(
-            places_by_category,
-            fallback_orders,
-            transport,
-            pool_limit=FALLBACK_POOL_LIMIT,
-        )
-        return self._deduplicate_and_sort(primary_courses + fallback_courses)
+        # 카테고리별 score 내림차순 상위 N개 추출
+        top: dict[str, list[Place]] = {
+            cat: sorted(places, key=lambda p: p.score, reverse=True)[:TOP_N_CANDIDATES]
+            for cat, places in places_by_category.items()
+            if places
+        }
 
-    # ── 시작 카테고리 결정 (RECOMMENDATION_SPEC.md §6) ─────────────────────────
-
-    def _determine_start_category(
-        self,
-        time_slot: TimeSlot,
-        start_time: time,
-        places_by_category: dict[str, list[Place]],
-    ) -> str:
-        if time_slot.is_late_night():
-            return "restaurant" if places_by_category.get("restaurant") else "activity"
-
-        minutes = start_time.hour * 60 + start_time.minute
-        dist_to_nearest_meal = min(abs(minutes - ep) for ep in MEAL_ENTRY_POINTS)
-
-        if dist_to_nearest_meal <= 60:
-            return "restaurant"
-
-        cafe_count = len(places_by_category.get("cafe", []))
-        activity_count = len(places_by_category.get("activity", [])) + len(
-            places_by_category.get("walk", [])
-        )
-        return "cafe" if cafe_count >= activity_count else "activity"
-
-    # ── 카테고리 순서 생성 ────────────────────────────────────────────────────
-
-    def _get_category_orders(
-        self,
-        time_slot: TimeSlot,
-        start_time: time,
-        places_by_category: dict[str, list[Place]],
-        expanded: bool = False,
-    ) -> list[list[str]]:
-        if time_slot.is_late_night():
-            base_orders = [["restaurant", "activity"], ["activity", "restaurant"]]
-            return base_orders if not expanded else self._unique_orders(base_orders)
-
-        start = self._determine_start_category(time_slot, start_time, places_by_category)
-        starts = [start]
-        if expanded:
-            starts.extend(
-                category
-                for category in CATEGORY_TRANSITIONS
-                if category != start and places_by_category.get(category)
-            )
-
-        orders: list[list[str]] = []
-        for current_start in starts:
-            nexts = CATEGORY_TRANSITIONS[current_start]
-            available = [c for c in nexts if places_by_category.get(c)]
-            second_candidates = available if expanded else available[:2]
-
-            current_orders: list[list[str]] = []
-            for second in second_candidates:
-                thirds = [
-                    c for c in CATEGORY_TRANSITIONS[second]
-                    if c != current_start and c != second and places_by_category.get(c)
-                ]
-                third_candidates = thirds if expanded else thirds[:1]
-                for third in third_candidates:
-                    current_orders.append([current_start, second, third])
-
-            if current_orders:
-                orders.extend(current_orders)
-            else:
-                fallback_order = [current_start] + (available[:2] if not expanded else available)
-                if len(fallback_order) >= 2:
-                    orders.append(fallback_order)
-
-        return self._unique_orders(orders)
-
-    def _collect_candidates(
-        self,
-        places_by_category: dict[str, list[Place]],
-        category_orders: list[list[str]],
-        transport: Transport,
-        pool_limit: int,
-    ) -> list[Course]:
+        preferred_starts = self._preferred_starts(time_slot)
+        used_names: set[str] = set()
+        used_patterns: set[tuple] = set()
         courses: list[Course] = []
-        for order in category_orders:
-            candidates = self._generate_candidates(
-                places_by_category,
-                order,
-                transport,
-                pool_limit=pool_limit,
+        full_patterns = self._available_patterns(top, COURSE_PATTERNS)
+        fallback_patterns = self._available_patterns(top, FALLBACK_COURSE_PATTERNS)
+
+        for course_type in ("main", "sub1", "sub2"):
+            pattern_pool = full_patterns if full_patterns else fallback_patterns
+            if not pattern_pool:
+                break
+
+            course = None
+            selected_pattern = None
+            attempt_plans = self._attempt_plans(
+                course_type=course_type,
+                pattern_pool=pattern_pool,
+                fallback_patterns=fallback_patterns,
             )
-            courses.extend(candidates)
+            for patterns, avoid_used_patterns, avoid_used_names in attempt_plans:
+                for pattern in self._pattern_attempt_order(
+                    patterns,
+                    preferred_starts,
+                    used_patterns,
+                    rng,
+                    avoid_used_patterns=avoid_used_patterns,
+                ):
+                    course = self._build_course_with_retries(
+                        top,
+                        pattern,
+                        transport,
+                        used_names,
+                        course_type,
+                        rng,
+                        avoid_used_names=avoid_used_names,
+                    )
+                    if course is not None:
+                        selected_pattern = pattern
+                        break
+                if course is not None:
+                    break
+            if course is not None:
+                courses.append(course)
+                used_names.update(course.place_name_set())
+                if selected_pattern is not None:
+                    used_patterns.add(tuple(selected_pattern))
+
         return courses
 
-    # ── 코스 후보 생성 ────────────────────────────────────────────────────────
+    def _preferred_starts(self, time_slot: TimeSlot) -> list[str]:
+        slot = time_slot.value
+        if slot == "late_night":
+            return ["restaurant", "activity"]
+        if slot in ("lunch", "evening"):
+            return ["restaurant", "activity", "cafe"]
+        return ["cafe", "walk", "activity"]
 
-    def _generate_candidates(
+    def _pick_pattern(
         self,
-        places_by_category: dict[str, list[Place]],
-        category_order: list[str],
-        transport: Transport,
-        pool_limit: int = PRIMARY_POOL_LIMIT,
-    ) -> list[Course]:
-        pools = [places_by_category.get(cat, [])[:pool_limit] for cat in category_order]
-        if any(not pool for pool in pools):
-            return []
+        available: list[list[str]],
+        preferred_starts: list[str],
+        used_patterns: set[tuple],
+        rng: random.Random,
+        avoid_used_patterns: bool = True,
+    ) -> list[str]:
+        if avoid_used_patterns:
+            unused = [p for p in available if tuple(p) not in used_patterns]
+            pool = unused if unused else available
+        else:
+            pool = available
+        preferred = [p for p in pool if p[0] in preferred_starts]
+        return rng.choice(preferred if preferred else pool)
 
-        candidates: list[Course] = []
-        for p0 in pools[0]:
-            for p1 in (pools[1] if len(pools) > 1 else [None]):
-                for p2 in (pools[2] if len(pools) > 2 else [None]):
-                    place_list = [x for x in [p0, p1, p2] if x is not None]
-                    if len({p.name for p in place_list}) != len(place_list):
-                        continue
-                    course = self._build_course(place_list, transport)
-                    if course is not None:
-                        candidates.append(course)
-        return candidates
+    def _pattern_attempt_order(
+        self,
+        available: list[list[str]],
+        preferred_starts: list[str],
+        used_patterns: set[tuple],
+        rng: random.Random,
+        avoid_used_patterns: bool,
+    ) -> list[list[str]]:
+        if avoid_used_patterns:
+            unused = [pattern for pattern in available if tuple(pattern) not in used_patterns]
+            pool = unused if unused else available
+        else:
+            pool = available
+
+        preferred = [pattern for pattern in pool if pattern[0] in preferred_starts]
+        others = [pattern for pattern in pool if pattern[0] not in preferred_starts]
+        rng.shuffle(preferred)
+        rng.shuffle(others)
+        ordered = preferred + others
+        return ordered[: self._MAX_PATTERN_ATTEMPTS]
+
+    def _available_patterns(
+        self,
+        top: dict[str, list[Place]],
+        patterns: list[list[str]],
+    ) -> list[list[str]]:
+        return [pattern for pattern in patterns if all(top.get(cat) for cat in pattern)]
 
     def _build_course(
         self,
-        places: list[Place],
+        top: dict[str, list[Place]],
+        pattern: list[str],
         transport: Transport,
+        used_names: set[str],
+        course_type: str,
+        rng: random.Random,
+        avoid_used_names: bool = True,
     ) -> Optional[Course]:
-        course = Course(course_type="", transport=transport.value)
-        total_candidate_count = len(places)
+        course = Course(course_type=course_type, transport=transport.value)
+        selected: list[Place] = []
+        course_used: set[str] = set()
 
-        for i, place in enumerate(places):
+        for cat in pattern:
+            pool = top.get(cat, [])
+            if avoid_used_names:
+                fresh = [p for p in pool if p.name not in used_names and p.name not in course_used]
+                candidates = fresh or [p for p in pool if p.name not in course_used]
+            else:
+                candidates = [p for p in pool if p.name not in course_used]
+            if not candidates:
+                return None
+
+            weights = [max(p.score, 0.01) for p in candidates]
+            place = rng.choices(candidates, weights=weights, k=1)[0]
+            selected.append(place)
+            course_used.add(place.name)
+
+        for i, place in enumerate(selected):
             travel_time: Optional[int] = None
-            if i < len(places) - 1:
-                dist = place.distance_to_meters(places[i + 1])
-                travel_minutes = int((dist / transport.speed_mps()) / 60)
-                if travel_minutes > transport.max_travel_minutes():
-                    return None  # 이동수단 제약 초과 → 해당 조합 제외
-                travel_time = travel_minutes
+            if i < len(selected) - 1:
+                dist = place.distance_to_meters(selected[i + 1])
+                minutes = int(dist / transport.speed_mps() / 60)
+                if minutes > transport.max_travel_minutes():
+                    return None
+                travel_time = minutes
             course.add_place(place, order=i + 1, travel_time=travel_time)
 
-        course.total_score = sum(
-            p.calculate_total_score(total_candidate_count) for p in places
-        )
+        course.total_score = sum(p.score for p in selected)
         return course
 
-    # ── 중복 제거 및 정렬 ─────────────────────────────────────────────────────
+    def _build_course_with_retries(
+        self,
+        top: dict[str, list[Place]],
+        pattern: list[str],
+        transport: Transport,
+        used_names: set[str],
+        course_type: str,
+        rng: random.Random,
+        avoid_used_names: bool,
+    ) -> Optional[Course]:
+        for _ in range(self._MAX_PLACE_ATTEMPTS_PER_PATTERN):
+            course = self._build_course(
+                top,
+                pattern,
+                transport,
+                used_names,
+                course_type,
+                rng,
+                avoid_used_names=avoid_used_names,
+            )
+            if course is not None:
+                return course
+        return None
 
-    def _deduplicate_and_sort(self, courses: list[Course]) -> list[Course]:
-        seen: set[frozenset[str]] = set()
-        unique: list[Course] = []
-        for course in sorted(courses, key=lambda c: c.total_score, reverse=True):
-            key = course.place_name_set()
-            if key not in seen:
-                seen.add(key)
-                unique.append(course)
-        return unique
-
-    def _unique_orders(self, orders: list[list[str]]) -> list[list[str]]:
-        seen: set[tuple[str, ...]] = set()
-        unique: list[list[str]] = []
-        for order in orders:
-            key = tuple(order)
-            if key in seen:
-                continue
-            seen.add(key)
-            unique.append(order)
-        return unique
+    def _attempt_plans(
+        self,
+        course_type: str,
+        pattern_pool: list[list[str]],
+        fallback_patterns: list[list[str]],
+    ) -> list[tuple[list[list[str]], bool, bool]]:
+        plans: list[tuple[list[list[str]], bool, bool]] = [
+            (pattern_pool, True, True),
+        ]
+        if fallback_patterns and fallback_patterns is not pattern_pool:
+            plans.append((fallback_patterns, True, True))
+        if course_type != "main":
+            plans.append((pattern_pool, False, True))
+            if fallback_patterns and fallback_patterns is not pattern_pool:
+                plans.append((fallback_patterns, False, True))
+            plans.append((pattern_pool, False, False))
+            if fallback_patterns and fallback_patterns is not pattern_pool:
+                plans.append((fallback_patterns, False, False))
+        return plans

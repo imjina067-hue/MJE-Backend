@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import logging
+
 import httpx
 
 from app.infrastructure.config.settings import get_settings
 
 _BASE_URL = "https://openapi.naver.com/v1/search"
 _PARKING_KEYWORD = "주차장"
+
+logger = logging.getLogger(__name__)
 
 
 class NaverSearchClient:
@@ -20,13 +24,23 @@ class NaverSearchClient:
 
     async def search_places(self, area: str, category: str, display: int = 10) -> list[dict]:
         """Collect place candidates from the Naver local search API."""
-        resp = await self._client.get(
-            f"{_BASE_URL}/local.json",
-            headers=self._headers,
-            params={"query": area, "display": display, "sort": "comment"},
-        )
-        resp.raise_for_status()
-        return resp.json().get("items", [])
+        try:
+            resp = await self._client.get(
+                f"{_BASE_URL}/local.json",
+                headers=self._headers,
+                params={"query": area, "display": display, "sort": "comment"},
+            )
+            resp.raise_for_status()
+            return resp.json().get("items", [])
+        except Exception as exc:
+            logger.warning(
+                "naver.local_search_failed category=%s query=%s display=%s error=%s",
+                category,
+                area,
+                display,
+                exc,
+            )
+            return []
 
     async def search_images(self, query: str, display: int = 5) -> list[dict]:
         """Search image candidates from the Naver image search API."""
