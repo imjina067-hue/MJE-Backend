@@ -1,3 +1,4 @@
+import logging
 import uvicorn
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
@@ -16,6 +17,9 @@ from app.infrastructure.database.create_tables import create_tables
 from app.infrastructure.dependencies import close_external_clients
 from app.infrastructure.exception_handler import register_exception_handlers
 from app.infrastructure.logging_middleware import LoggingMiddleware
+
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
 
 
 @asynccontextmanager

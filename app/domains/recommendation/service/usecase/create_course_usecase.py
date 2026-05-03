@@ -119,21 +119,16 @@ class CreateCourseUseCase:
             for cat, places in places_by_category.items()
         }
 
-        # 4. 이미지 보강
-        for cat, places in filtered.items():
-            for place in places:
-                place.image_url = await self._fetch_image(place, cat)
-
-        # 5. 차량 이동 시 주차 정보 조회
+        # 4. 차량 이동 시 주차 정보 조회
         if transport.requires_parking_check():
             for places in filtered.values():
                 for place in places:
                     place.has_parking = await self._search.search_parking(place.road_address)
 
-        # 6. 장소 점수 계산
+        # 5. 장소 점수 계산
         self._scorer.apply_scores(filtered, category_trends, time_slot, transport)
 
-        # 7. 코스 조합 — 가중 랜덤 선택
+        # 6. 코스 조합 — 가중 랜덤 선택
         courses = self._composer.compose(filtered, time_slot, transport)
         self._log_recommendation_diagnostics(
             dto=dto,
@@ -146,8 +141,11 @@ class CreateCourseUseCase:
 
         main, sub1, sub2 = self._scorer.rank_courses(courses)
 
-        # 9. 최종 코스에 한해 Naver 지도 API로 실제 이동소요시간·동선 보강
+        # 7. 최종 코스 장소에만 이미지 보강
         final_courses = [c for c in [main, sub1, sub2] if c is not None]
+        await self._enrich_final_course_images(final_courses)
+
+        # 8. 최종 코스에 한해 Naver 지도 API로 실제 이동소요시간·동선 보강
         await self._enrich_with_routes(final_courses, dto.transport)
 
         recommendation_id = str(uuid.uuid4())
@@ -161,6 +159,17 @@ class CreateCourseUseCase:
         )
         self._course_store.save(recommendation_id, response)
         return response
+
+    async def _enrich_final_course_images(self, courses: list[Course]) -> None:
+        seen_places: set[tuple[str, str, str]] = set()
+        for course in courses:
+            for course_place in course.places:
+                place = course_place.place
+                key = (place.name, place.area, place.category)
+                if key in seen_places:
+                    continue
+                seen_places.add(key)
+                place.image_url = await self._fetch_image(place, place.category)
 
     # ── 트렌드 수집 ───────────────────────────────────────────────────────────
 
