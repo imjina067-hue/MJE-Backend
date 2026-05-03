@@ -13,6 +13,7 @@ from app.domains.recommendation.domain.service.recommendation_config import (
     ACTIVITY_FALLBACK_SEARCH_KEYWORDS,
     CATEGORY_SEARCH_KEYWORDS,
     MIN_ACTIVITY_CANDIDATES,
+    TOP_N_CANDIDATES,
 )
 from app.domains.recommendation.domain.service.rule_scorer import RuleScorer
 from app.domains.recommendation.domain.service.time_slot_filter import TimeSlotFilter
@@ -90,6 +91,7 @@ class CreateCourseUseCase:
         self._slot_filter = TimeSlotFilter()
         self._scorer = RuleScorer()
         self._composer = CourseComposer()
+        self._place_search_cache: dict[tuple[str, str, int], list[dict]] = {}
 
     async def execute(self, dto: CreateCourseRequestDto) -> CreateCourseResponseDto:
         start_time = self._parse_time(dto.start_time)
@@ -176,9 +178,15 @@ class CreateCourseUseCase:
             trend_score = category_trends.get(cat, 0.0)
             display = max(10, min(40, int(20 + trend_score * 20)))
             raw: list[dict] = []
+            target_count = TOP_N_CANDIDATES if cat != "activity" else max(
+                TOP_N_CANDIDATES,
+                MIN_ACTIVITY_CANDIDATES,
+            )
             for kw in CATEGORY_SEARCH_KEYWORDS[cat][time_slot.value]:
-                items = await self._search.search_places(f"{area} {kw}", cat, display=display)
+                items = await self._search_places_cached(f"{area} {kw}", cat, display)
                 raw.extend(items)
+                if len(self._sanitize_places(area, cat, [self._to_place(item, cat, rank) for rank, item in enumerate(raw, 1)])) >= target_count:
+                    break
             candidates = [self._to_place(item, cat, rank) for rank, item in enumerate(raw, 1)]
             sanitized = self._sanitize_places(area, cat, candidates)
 
@@ -205,9 +213,26 @@ class CreateCourseUseCase:
     ) -> list[dict]:
         raw: list[dict] = []
         for kw in ACTIVITY_FALLBACK_SEARCH_KEYWORDS.get(time_slot.value, []):
-            items = await self._search.search_places(f"{area} {kw}", "activity", display=display)
+            items = await self._search_places_cached(f"{area} {kw}", "activity", display)
             raw.extend(items)
+            if len(raw) >= MIN_ACTIVITY_CANDIDATES:
+                break
         return raw
+
+    async def _search_places_cached(
+        self,
+        query: str,
+        category: str,
+        display: int,
+    ) -> list[dict]:
+        cache_key = (query, category, display)
+        cached = self._place_search_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        items = await self._search.search_places(query, category, display=display)
+        self._place_search_cache[cache_key] = items
+        return items
 
     def _to_place(self, item: dict, category: str, rank: int) -> Place:
         name = _BOLD_RE.sub("", html.unescape(item.get("title", "")))
