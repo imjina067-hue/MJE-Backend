@@ -56,6 +56,7 @@ _IMAGE_PEOPLE_EXCLUDE_KEYWORDS = frozenset(
 _IMAGE_SCENIC_EXCLUDE_KEYWORDS = frozenset(
     {"lake", "forest", "mountain", "river", "canoe", "camping", "nature", "landscape", "호수", "숲", "산", "강", "캠핑"}
 )
+_IMAGE_LOOKUP_LIMIT_PER_REQUEST = 4
 _BOLD_RE = re.compile(r"</?b>")
 
 ALL_CATEGORIES = ["restaurant", "cafe", "activity"]
@@ -113,8 +114,15 @@ class CreateCourseUseCase:
         self._scorer = RuleScorer()
         self._composer = CourseComposer()
         self._place_search_cache: dict[tuple[str, str, int], list[dict]] = {}
+        self._image_lookup_count = 0
+        self._image_lookup_rate_limited = False
+        self._image_cache: dict[tuple[str, str, str], str | None] = {}
 
     async def execute(self, dto: CreateCourseRequestDto) -> CreateCourseResponseDto:
+        self._image_lookup_count = 0
+        self._image_lookup_rate_limited = False
+        self._image_cache.clear()
+
         start_time = self._parse_time(dto.start_time)
         time_slot = TimeSlot.from_time(start_time)
         transport = Transport.from_str(dto.transport)
@@ -629,11 +637,37 @@ class CreateCourseUseCase:
     # ── 이미지 ────────────────────────────────────────────────────────────────
 
     async def _fetch_image(self, place: Place, category: str) -> str | None:
+        cache_key = (place.name, place.area, category)
+        if cache_key in self._image_cache:
+            return self._image_cache[cache_key]
+
+        if self._image_lookup_rate_limited:
+            logger.info(
+                "recommendation.image_skipped place=%s category=%s reason=rate_limited",
+                place.name,
+                category,
+            )
+            self._image_cache[cache_key] = None
+            return None
+
+        if self._image_lookup_count >= _IMAGE_LOOKUP_LIMIT_PER_REQUEST:
+            logger.info(
+                "recommendation.image_skipped place=%s category=%s reason=budget_exceeded budget=%s",
+                place.name,
+                category,
+                _IMAGE_LOOKUP_LIMIT_PER_REQUEST,
+            )
+            self._image_cache[cache_key] = None
+            return None
+
         suffix = self._image_suffix_for_place(place, category)
         query = f"{place.area} {place.name} {suffix}"
+        self._image_lookup_count += 1
         try:
-            images = await self._search.search_images(query)
+            images = await self._search.search_images(query, display=3)
         except Exception as exc:
+            if "429" in str(exc):
+                self._image_lookup_rate_limited = True
             logger.warning(
                 "recommendation.image_lookup_failed category=%s place=%s query=%s error=%s",
                 category,
@@ -641,6 +675,7 @@ class CreateCourseUseCase:
                 query,
                 exc,
             )
+            self._image_cache[cache_key] = None
             return None
         best_url: str | None = None
         best_score: int | None = None
@@ -662,6 +697,7 @@ class CreateCourseUseCase:
                 query,
                 len(images),
             )
+        self._image_cache[cache_key] = best_url
         return best_url
 
     def _is_valid_image(self, img: dict) -> bool:
