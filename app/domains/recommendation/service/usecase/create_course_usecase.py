@@ -47,6 +47,9 @@ _IMAGE_HARD_EXCLUDE_KEYWORDS = frozenset(
 _IMAGE_STOCK_EXCLUDE_KEYWORDS = frozenset(
     {"unsplash", "pexels", "pixabay", "shutterstock", "stock"}
 )
+_IMAGE_SOURCE_EXCLUDE_KEYWORDS = frozenset(
+    {"pinterest", "pinimg", "instagram", "cdninstagram", "kmong", "blog", "postfiles"}
+)
 _IMAGE_PEOPLE_EXCLUDE_KEYWORDS = frozenset(
     {"face", "selfie", "profile", "portrait", "woman", "man", "person", "people", "모델", "인물", "여자", "남자"}
 )
@@ -67,6 +70,13 @@ CATEGORY_IMAGE_SUFFIX = {
     "restaurant": "음식 사진",
     "cafe": "카페 외관",
     "activity": "체험",
+}
+ACTIVITY_SUBTYPE_IMAGE_SUFFIX = {
+    "culture": "전시 공간",
+    "experience": "체험 공간",
+    "walk": "산책 야경",
+    "nightlife": "바 내부",
+    "shopping": "쇼룸 매장",
 }
 
 # Datalab 쿼리용: {area} + 아래 키워드 조합으로 카테고리별 인기도 수집
@@ -619,7 +629,7 @@ class CreateCourseUseCase:
     # ── 이미지 ────────────────────────────────────────────────────────────────
 
     async def _fetch_image(self, place: Place, category: str) -> str | None:
-        suffix = CATEGORY_IMAGE_SUFFIX[category]
+        suffix = self._image_suffix_for_place(place, category)
         query = f"{place.area} {place.name} {suffix}"
         try:
             images = await self._search.search_images(query)
@@ -671,6 +681,8 @@ class CreateCourseUseCase:
             return None
         if any(keyword in combined for keyword in _IMAGE_STOCK_EXCLUDE_KEYWORDS):
             return None
+        if any(keyword in combined for keyword in _IMAGE_SOURCE_EXCLUDE_KEYWORDS):
+            return None
 
         score = 0
         place_name = self._normalize_text(place.name)
@@ -687,6 +699,7 @@ class CreateCourseUseCase:
 
         category_signals = _CATEGORY_SIGNALS.get(category, ())
         score += sum(1 for signal in category_signals if self._normalize_text(signal) in combined)
+        score += self._activity_image_bonus(place, combined)
 
         if any(bad in combined for bad in ("face", "selfie", "profile", "人物")):
             score -= 4
@@ -699,6 +712,28 @@ class CreateCourseUseCase:
             score -= 6
 
         return score if score > 0 else None
+
+    def _image_suffix_for_place(self, place: Place, category: str) -> str:
+        if category == "activity" and place.activity_subtype:
+            return ACTIVITY_SUBTYPE_IMAGE_SUFFIX.get(place.activity_subtype, CATEGORY_IMAGE_SUFFIX[category])
+        return CATEGORY_IMAGE_SUFFIX[category]
+
+    def _activity_image_bonus(self, place: Place, combined: str) -> int:
+        if place.category != "activity" or not place.activity_subtype:
+            return 0
+
+        subtype_signals = {
+            "culture": ("전시", "갤러리", "미술관", "전시장"),
+            "experience": ("체험", "공방", "클래스", "공간"),
+            "walk": ("산책", "공원", "야경", "루프탑"),
+            "nightlife": ("와인바", "칵테일", "바", "라운지"),
+            "shopping": ("쇼룸", "편집숍", "소품샵", "매장"),
+        }
+        return sum(
+            2
+            for signal in subtype_signals.get(place.activity_subtype, ())
+            if self._normalize_text(signal) in combined
+        )
 
     # ── 지도 API 동선 보강 ─────────────────────────────────────────────────────
 
@@ -831,7 +866,10 @@ class CreateCourseUseCase:
         return f"{area} {body}".strip()
 
     def _build_course_description(self, course: Course, time_slot: TimeSlot) -> str:
-        segments = [self._describe_course_place(cp.place.category, cp.place.keywords) for cp in course.places]
+        segments = [
+            self._describe_course_place(cp.place.category, cp.place.keywords, cp.place.activity_subtype)
+            for cp in course.places
+        ]
         segments = [segment for segment in segments if segment]
 
         time_context = {
@@ -850,7 +888,12 @@ class CreateCourseUseCase:
             return f"{segments[0]} 중심으로 구성한 {time_context} 데이트 코스입니다."
         return f"{time_context} 데이트 코스입니다."
 
-    def _describe_course_place(self, category: str, keywords: list[str]) -> str:
+    def _describe_course_place(
+        self,
+        category: str,
+        keywords: list[str],
+        activity_subtype: str | None = None,
+    ) -> str:
         text = self._normalize_text(" ".join(keywords))
 
         if category == "restaurant":
@@ -866,6 +909,17 @@ class CreateCourseUseCase:
             if "디저트" in text:
                 return "디저트 카페에서 쉬고"
             return "감성 카페에서 쉬고"
+
+        if activity_subtype == "culture":
+            return "전시와 문화를 즐기고"
+        if activity_subtype == "experience":
+            return "체험 데이트를 즐기고"
+        if activity_subtype == "walk":
+            return "산책과 풍경을 즐기고"
+        if activity_subtype == "nightlife":
+            return "밤 분위기를 즐기고"
+        if activity_subtype == "shopping":
+            return "쇼핑과 구경을 즐기고"
 
         if any(keyword in text for keyword in ("전시", "갤러리", "미술관", "박물관")):
             return "전시를 즐기는"
@@ -993,6 +1047,17 @@ class CreateCourseUseCase:
             if "브런치" in text:
                 return "브런치 카페"
             return "카페"
+
+        if place.activity_subtype == "culture":
+            return "전시"
+        if place.activity_subtype == "experience":
+            return "체험"
+        if place.activity_subtype == "walk":
+            return "산책"
+        if place.activity_subtype == "nightlife":
+            return "야경"
+        if place.activity_subtype == "shopping":
+            return "쇼핑"
 
         if any(keyword in text for keyword in ("전시", "갤러리", "미술관", "박물관")):
             return "전시"
