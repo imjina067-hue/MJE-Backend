@@ -30,6 +30,7 @@ class PlaceResponseItem(BaseModel):
 class CourseResponseItem(BaseModel):
     courseId: str
     courseType: str
+    title: str
     transport: str
     totalDurationMinutes: int
     imageUrl: Optional[str]
@@ -58,6 +59,7 @@ class CreateCourseResponseForm(BaseModel):
         return CourseResponseItem(
             courseId=course.course_id,
             courseType=course.course_type,
+            title=course.title,
             transport=course.transport,
             totalDurationMinutes=course.total_duration_minutes,
             imageUrl=course.image_url,

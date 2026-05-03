@@ -555,9 +555,47 @@ class CreateCourseUseCase:
             course_type=course.course_type,
             transport=course.transport,
             total_duration_minutes=course.total_duration_minutes(),
+            title=self._build_course_title(course, time_slot),
             image_url=self._select_course_cover_image(course),
             places=places,
         )
+
+    def _build_course_title(self, course: Course, time_slot: TimeSlot) -> str:
+        area = course.places[0].place.area if course.places else ""
+        category_labels = {
+            "restaurant": "맛집",
+            "cafe": "카페",
+            "activity": "데이트",
+            "walk": "산책",
+        }
+
+        ordered_categories: list[str] = []
+        for cp in course.places:
+            category = cp.place.category
+            if category not in ordered_categories:
+                ordered_categories.append(category)
+
+        labels = [category_labels.get(category, category) for category in ordered_categories[:2]]
+        time_prefix_map = {
+            "morning": "브런치",
+            "lunch": "점심",
+            "afternoon": "오후",
+            "evening": "저녁",
+            "late_night": "심야",
+        }
+        time_prefix = time_prefix_map.get(time_slot.value, "")
+
+        if len(labels) >= 2:
+            body = f"{labels[0]}와 {labels[1]} 코스"
+        elif labels:
+            body = f"{labels[0]} 데이트"
+        else:
+            body = "데이트 코스"
+
+        if time_prefix and labels:
+            body = f"{time_prefix} {body}"
+
+        return f"{area} {body}".strip()
 
     def _select_course_cover_image(self, course: Course) -> str | None:
         ranked_candidates: list[tuple[int, str]] = []

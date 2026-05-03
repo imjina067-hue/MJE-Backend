@@ -59,8 +59,7 @@ class GetCourseDetailUseCase:
         )
 
     def _build_title(self, course: CourseResultDto) -> str:
-        area = course.places[0].area if course.places else ""
-        return f"{area} {course.course_type}".strip()
+        return course.title
 
     def _build_description(self, course: CourseResultDto) -> str:
         names = ", ".join(place.name for place in course.places[:3])

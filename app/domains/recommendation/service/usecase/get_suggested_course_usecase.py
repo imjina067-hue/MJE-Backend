@@ -29,8 +29,7 @@ class GetSuggestedCourseUseCase:
 
     def get_explain_text(self, course_id: str) -> ExplainTextDto:
         course = self._get_course(course_id)
-        area = course.places[0].area if course.places else ""
-        name = f"{area} {course.course_type}".strip() if area else course.course_type
+        name = course.title
         description = " -> ".join(p.name for p in course.places[:4])
         return ExplainTextDto(name=name, description=description)
 
@@ -124,7 +123,7 @@ class GetSuggestedCourseUseCase:
         return OtherCourseItemDto(
             id=course.course_id,
             course_id=course.course_id,
-            name=course.course_type,
+            name=course.title,
             description=description,
             locations=locations,
             duration=course.total_duration_minutes,
