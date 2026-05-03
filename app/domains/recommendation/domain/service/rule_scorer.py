@@ -19,10 +19,9 @@ class RuleScorer:
         if not courses:
             return None, None, None
 
-        sorted_courses = sorted(courses, key=lambda c: c.total_score, reverse=True)
-        main = self._assign_type(sorted_courses[0], "main")
+        main = self._pick_main_course(courses)
 
-        remaining = sorted_courses[1:]
+        remaining = [c for c in courses if c is not main]
         sub1_candidates = [c for c in remaining if not self._is_too_similar(main, c)]
         sub1 = self._pick_diverse_course(main, sub1_candidates, "sub1")
 
@@ -32,6 +31,13 @@ class RuleScorer:
         sub2 = self._pick_diverse_course_multi_anchor(anchors, sub2_candidates, "sub2")
 
         return main, sub1, sub2
+
+    def _pick_main_course(self, courses: list[Course]) -> Course:
+        """Highest total_score wins; more places breaks ties."""
+        return self._assign_type(
+            max(courses, key=lambda c: (c.total_score, len(c.places))),
+            "main",
+        )
 
     def _assign_type(self, course: Course, course_type: str) -> Course:
         course.course_type = course_type
