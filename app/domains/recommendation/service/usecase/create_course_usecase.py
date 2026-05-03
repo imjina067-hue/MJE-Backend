@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import logging
 import re
 import uuid
 from datetime import time
@@ -29,9 +30,19 @@ _INSUFFICIENT_MESSAGE = (
 )
 
 _IMAGE_EXCLUDE_KEYWORDS = frozenset({"협찬", "광고", "제공받아", "부동산", "분양"})
+_IMAGE_HARD_EXCLUDE_KEYWORDS = frozenset(
+    {"map", "logo", "banner", "poster", "ad", "guide", "capture"}
+)
 _BOLD_RE = re.compile(r"</?b>")
 
 ALL_CATEGORIES = ["restaurant", "cafe", "walk", "activity"]
+
+_CATEGORY_SIGNALS: dict[str, tuple[str, ...]] = {
+    "restaurant": ("음식", "식당", "맛집", "요리", "주점", "술집", "포차", "바", "레스토랑"),
+    "cafe": ("카페", "커피", "디저트", "베이커리", "브런치"),
+    "walk": ("공원", "산책", "거리", "둘레길", "하천", "호수", "전망", "야경", "광장"),
+    "activity": ("전시", "체험", "공방", "영화", "볼링", "방탈출", "노래방", "갤러리", "스튜디오"),
+}
 
 CATEGORY_IMAGE_SUFFIX = {
     "restaurant": "음식 사진",
@@ -54,6 +65,9 @@ CATEGORY_TREND_KEYWORD = {
     "walk": "산책",
     "activity": "이색체험",
 }
+
+
+logger = logging.getLogger(__name__)
 
 
 class CreateCourseUseCase:
@@ -106,6 +120,14 @@ class CreateCourseUseCase:
 
         # 7. 코스 조합 (Domain Service)
         courses = self._composer.compose(filtered, time_slot, transport, start_time)
+        self._log_recommendation_diagnostics(
+            dto=dto,
+            time_slot=time_slot,
+            transport=transport,
+            places_by_category=places_by_category,
+            filtered_places=filtered,
+            courses=courses,
+        )
 
         # 8. Rule Scoring으로 메인/서브 순위 결정
         main, sub1, sub2 = self._scorer.rank_courses(courses)
@@ -114,9 +136,16 @@ class CreateCourseUseCase:
         final_courses = [c for c in [main, sub1, sub2] if c is not None]
         await self._enrich_with_routes(final_courses, dto.transport)
 
-        course_id = str(uuid.uuid4())
-        response = self._build_response(main, sub1, sub2, time_slot, len(courses), course_id)
-        self._course_store.save(course_id, response)
+        recommendation_id = str(uuid.uuid4())
+        response = self._build_response(
+            main,
+            sub1,
+            sub2,
+            time_slot,
+            len(courses),
+            recommendation_id,
+        )
+        self._course_store.save(recommendation_id, response)
         return response
 
     # ── 트렌드 수집 ───────────────────────────────────────────────────────────
@@ -145,7 +174,8 @@ class CreateCourseUseCase:
             display = max(5, min(20, int(10 + trend_score * 10)))
             keyword = CATEGORY_NAVER_KEYWORD[cat]
             raw = await self._search.search_places(f"{area} {keyword}", cat, display=display)
-            result[cat] = [self._to_place(item, cat, rank) for rank, item in enumerate(raw, 1)]
+            candidates = [self._to_place(item, cat, rank) for rank, item in enumerate(raw, 1)]
+            result[cat] = self._sanitize_places(area, cat, candidates)
         return result
 
     def _to_place(self, item: dict, category: str, rank: int) -> Place:
@@ -179,20 +209,184 @@ class CreateCourseUseCase:
             has_parking=has_parking,
         )
 
+    def _sanitize_places(self, requested_area: str, category: str, places: list[Place]) -> list[Place]:
+        sanitized: list[Place] = []
+        seen_keys: set[tuple[str, str]] = set()
+        dropped_counts = {
+            "invalid_coordinate": 0,
+            "area_mismatch": 0,
+            "duplicate": 0,
+            "category_mismatch": 0,
+        }
+
+        for place in places:
+            if not self._has_valid_coordinates(place):
+                dropped_counts["invalid_coordinate"] += 1
+                continue
+
+            if not self._matches_requested_area(requested_area, place):
+                dropped_counts["area_mismatch"] += 1
+                continue
+
+            dedupe_key = self._place_dedupe_key(place)
+            if dedupe_key in seen_keys:
+                dropped_counts["duplicate"] += 1
+                continue
+
+            if not self._matches_category_signal(category, place):
+                dropped_counts["category_mismatch"] += 1
+                continue
+
+            seen_keys.add(dedupe_key)
+            sanitized.append(place)
+
+        if any(dropped_counts.values()):
+            logger.info(
+                "recommendation.sanitize area=%s category=%s before=%s after=%s dropped=%s",
+                requested_area,
+                category,
+                len(places),
+                len(sanitized),
+                dropped_counts,
+            )
+
+        return sanitized
+
+    def _has_valid_coordinates(self, place: Place) -> bool:
+        return not (
+            abs(place.latitude) < 0.000001
+            or abs(place.longitude) < 0.000001
+            or not (-90 <= place.latitude <= 90)
+            or not (-180 <= place.longitude <= 180)
+        )
+
+    def _matches_requested_area(self, requested_area: str, place: Place) -> bool:
+        normalized_area = self._normalize_text(requested_area)
+        if not normalized_area:
+            return True
+
+        if self._should_relax_area_matching(normalized_area):
+            return True
+
+        haystack = self._normalize_text(
+            " ".join(
+                part
+                for part in [place.area, place.address, place.road_address]
+                if part
+            )
+        )
+        if not haystack:
+            return False
+
+        return all(token in haystack for token in normalized_area.split())
+
+    def _should_relax_area_matching(self, normalized_area: str) -> bool:
+        tokens = normalized_area.split()
+        if not tokens:
+            return True
+
+        if normalized_area in {"서울", "서울시"}:
+            return True
+
+        if len(tokens) == 1:
+            token = tokens[0]
+            administrative_suffixes = ("시", "도", "구", "군", "동", "읍", "면", "리", "가")
+            if not token.endswith(administrative_suffixes):
+                return True
+
+        return False
+
+    def _place_dedupe_key(self, place: Place) -> tuple[str, str]:
+        normalized_name = self._normalize_text(place.name)
+        normalized_address = self._normalize_text(place.road_address or place.address)
+        return normalized_name, normalized_address
+
+    def _matches_category_signal(self, category: str, place: Place) -> bool:
+        signals = _CATEGORY_SIGNALS.get(category, ())
+        if not signals:
+            return True
+
+        text = self._normalize_text(
+            " ".join(
+                [
+                    place.name,
+                    place.main_description,
+                    place.brief_description,
+                    " ".join(place.keywords),
+                ]
+            )
+        )
+        if not text:
+            return True
+
+        if any(signal in text for signal in signals):
+            return True
+
+        # 음식점은 카테고리 폭이 넓어서 너무 공격적으로 제외하지 않는다.
+        if category == "restaurant":
+            return True
+
+        return False
+
+    def _normalize_text(self, value: str) -> str:
+        return " ".join(value.lower().split())
+
     # ── 이미지 ────────────────────────────────────────────────────────────────
 
     async def _fetch_image(self, place: Place, category: str) -> str | None:
         suffix = CATEGORY_IMAGE_SUFFIX[category]
         query = f"{place.area} {place.name} {suffix}"
         images = await self._search.search_images(query)
+        best_url: str | None = None
+        best_score: int | None = None
         for img in images:
-            if self._is_valid_image(img):
-                return img.get("link") or img.get("thumbnail")
-        return None
+            score = self._score_image_candidate(img, place, category)
+            if score is None:
+                continue
+            image_url = img.get("link") or img.get("thumbnail")
+            if not image_url:
+                continue
+            if best_score is None or score > best_score:
+                best_score = score
+                best_url = image_url
+        return best_url
 
     def _is_valid_image(self, img: dict) -> bool:
         title = html.unescape(img.get("title", "")).lower()
         return not any(kw in title for kw in _IMAGE_EXCLUDE_KEYWORDS)
+
+    def _score_image_candidate(self, img: dict, place: Place, category: str) -> int | None:
+        title = self._normalize_text(html.unescape(img.get("title", "")))
+        link = self._normalize_text(img.get("link", ""))
+        combined = f"{title} {link}".strip()
+
+        if not combined:
+            return None
+        if not self._is_valid_image(img):
+            return None
+        if any(keyword in combined for keyword in _IMAGE_HARD_EXCLUDE_KEYWORDS):
+            return None
+
+        score = 0
+        place_name = self._normalize_text(place.name)
+        area = self._normalize_text(place.area)
+
+        if place_name and place_name in combined:
+            score += 6
+        else:
+            name_tokens = [token for token in place_name.split() if len(token) >= 2]
+            score += sum(2 for token in name_tokens if token in combined)
+
+        if area and area in combined:
+            score += 2
+
+        category_signals = _CATEGORY_SIGNALS.get(category, ())
+        score += sum(1 for signal in category_signals if self._normalize_text(signal) in combined)
+
+        if any(bad in combined for bad in ("face", "selfie", "profile", "人物")):
+            score -= 4
+
+        return score if score > 0 else None
 
     # ── Datalab 트렌드 반영 ───────────────────────────────────────────────────
 
@@ -232,20 +426,20 @@ class CreateCourseUseCase:
         sub2: Course | None,
         time_slot: TimeSlot,
         total_courses: int,
-        course_id: str,
+        recommendation_id: str,
     ) -> CreateCourseResponseDto:
         message = _INSUFFICIENT_MESSAGE if total_courses < 3 else None
         sub_courses = [
-            self._to_course_dto(c, time_slot) for c in [sub1, sub2] if c is not None
+            self._to_course_dto(c, time_slot, str(uuid.uuid4())) for c in [sub1, sub2] if c is not None
         ]
         return CreateCourseResponseDto(
-            course_id=course_id,
-            main_course=self._to_course_dto(main, time_slot) if main else None,
+            course_id=recommendation_id,
+            main_course=self._to_course_dto(main, time_slot, str(uuid.uuid4())) if main else None,
             sub_courses=sub_courses,
             message=message,
         )
 
-    def _to_course_dto(self, course: Course, time_slot: TimeSlot) -> CourseResultDto:
+    def _to_course_dto(self, course: Course, time_slot: TimeSlot, course_id: str) -> CourseResultDto:
         places = [
             PlaceResultDto(
                 visit_order=cp.visit_order,
@@ -265,6 +459,7 @@ class CreateCourseUseCase:
             for cp in course.places
         ]
         return CourseResultDto(
+            course_id=course_id,
             course_type=course.course_type,
             transport=course.transport,
             total_duration_minutes=course.total_duration_minutes(),
@@ -272,6 +467,62 @@ class CreateCourseUseCase:
         )
 
     # ── 유틸 ──────────────────────────────────────────────────────────────────
+
+    def _log_recommendation_diagnostics(
+        self,
+        dto: CreateCourseRequestDto,
+        time_slot: TimeSlot,
+        transport: Transport,
+        places_by_category: dict[str, list[Place]],
+        filtered_places: dict[str, list[Place]],
+        courses: list[Course],
+    ) -> None:
+        raw_counts = {category: len(places) for category, places in places_by_category.items()}
+        filtered_counts = {category: len(places) for category, places in filtered_places.items()}
+        empty_after_filter = [
+            category for category, count in filtered_counts.items() if count == 0
+        ]
+        populated_categories = [
+            category for category, count in filtered_counts.items() if count > 0
+        ]
+
+        if len(courses) >= 3:
+            logger.info(
+                "recommendation.generated area=%s time_slot=%s transport=%s raw_counts=%s filtered_counts=%s course_count=%s",
+                dto.area,
+                time_slot.value,
+                transport.value,
+                raw_counts,
+                filtered_counts,
+                len(courses),
+            )
+            return
+
+        reason_codes: list[str] = []
+        if not populated_categories:
+            reason_codes.append("no_places_after_filter")
+        elif len(populated_categories) == 1:
+            reason_codes.append("single_category_remaining")
+        elif len(courses) == 0:
+            reason_codes.append("composition_failed")
+        if len(courses) < 3:
+            reason_codes.append("insufficient_course_count")
+        if empty_after_filter:
+            reason_codes.append("category_exhausted_after_filter")
+
+        logger.warning(
+            "recommendation.insufficient area=%s start_time=%s time_slot=%s transport=%s raw_counts=%s filtered_counts=%s empty_after_filter=%s populated_categories=%s course_count=%s reason_codes=%s",
+            dto.area,
+            dto.start_time,
+            time_slot.value,
+            transport.value,
+            raw_counts,
+            filtered_counts,
+            empty_after_filter,
+            populated_categories,
+            len(courses),
+            reason_codes,
+        )
 
     def _parse_time(self, time_str: str) -> time:
         try:

@@ -21,6 +21,7 @@ class PlaceResultDto:
 
 @dataclass
 class CourseResultDto:
+    course_id: str
     course_type: str          # "main" | "sub1" | "sub2"
     transport: str
     total_duration_minutes: int

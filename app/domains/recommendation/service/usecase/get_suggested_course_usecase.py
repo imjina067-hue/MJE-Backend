@@ -28,14 +28,14 @@ class GetSuggestedCourseUseCase:
         self._store = course_store
 
     def get_explain_text(self, course_id: str) -> ExplainTextDto:
-        course = self._get_main_course(course_id)
+        course = self._get_course(course_id)
         area = course.places[0].area if course.places else ""
-        name = f"{area} 데이트 코스" if area else "추천 데이트 코스"
-        description = " → ".join(p.name for p in course.places[:4])
+        name = f"{area} {course.course_type}".strip() if area else course.course_type
+        description = " -> ".join(p.name for p in course.places[:4])
         return ExplainTextDto(name=name, description=description)
 
     def get_hashtag(self, course_id: str) -> HashtagDto:
-        course = self._get_main_course(course_id)
+        course = self._get_course(course_id)
         seen: set[str] = set()
         keywords: list[str] = []
         for place in course.places:
@@ -47,12 +47,12 @@ class GetSuggestedCourseUseCase:
         return HashtagDto(keywords=keywords)
 
     def get_location(self, course_id: str) -> LocationDto:
-        course = self._get_main_course(course_id)
+        course = self._get_course(course_id)
         location = course.places[0].area if course.places else ""
         return LocationDto(location=location)
 
     def get_image(self, course_id: str) -> CourseImageDto:
-        course = self._get_main_course(course_id)
+        course = self._get_course(course_id)
         image_url = next(
             (p.image_url for p in course.places if p.image_url),
             None,
@@ -60,7 +60,7 @@ class GetSuggestedCourseUseCase:
         return CourseImageDto(image_url=image_url)
 
     def get_restaurants(self, course_id: str) -> RestaurantsDto:
-        course = self._get_main_course(course_id)
+        course = self._get_course(course_id)
         items = [
             self._to_place_item(p, course_id)
             for p in course.places
@@ -69,7 +69,7 @@ class GetSuggestedCourseUseCase:
         return RestaurantsDto(restaurants=items)
 
     def get_cafes(self, course_id: str) -> CafesDto:
-        course = self._get_main_course(course_id)
+        course = self._get_course(course_id)
         items = [
             self._to_place_item(p, course_id)
             for p in course.places
@@ -78,7 +78,7 @@ class GetSuggestedCourseUseCase:
         return CafesDto(cafes=items)
 
     def get_activities(self, course_id: str) -> ActivitiesDto:
-        course = self._get_main_course(course_id)
+        course = self._get_course(course_id)
         items = [
             self._to_place_item(p, course_id)
             for p in course.places
@@ -87,24 +87,21 @@ class GetSuggestedCourseUseCase:
         return ActivitiesDto(activities=items)
 
     def get_other_courses(self, course_id: str) -> OtherCoursesDto:
-        dto = self._store.get(course_id)
-        if dto is None:
+        current_course = self._store.get_course(course_id)
+        if current_course is None:
             raise CourseNotFoundException(course_id)
+
         courses = [
-            self._to_other_course_item(c, course_id, idx)
-            for idx, c in enumerate(dto.sub_courses)
+            self._to_other_course_item(course, idx)
+            for idx, course in enumerate(self._store.get_other_courses(course_id))
         ]
         return OtherCoursesDto(courses=courses)
 
-    # ── 내부 헬퍼 ─────────────────────────────────────────────────────────────
-
-    def _get_main_course(self, course_id: str) -> CourseResultDto:
-        dto = self._store.get(course_id)
-        if dto is None:
+    def _get_course(self, course_id: str) -> CourseResultDto:
+        course = self._store.get_course(course_id)
+        if course is None:
             raise CourseNotFoundException(course_id)
-        if dto.main_course is None:
-            raise CourseNotFoundException(course_id)
-        return dto.main_course
+        return course
 
     def _to_place_item(self, place: PlaceResultDto, course_id: str) -> PlaceItemDto:
         return PlaceItemDto(
@@ -119,15 +116,15 @@ class GetSuggestedCourseUseCase:
     def _to_other_course_item(
         self,
         course: CourseResultDto,
-        course_id: str,
         idx: int,
     ) -> OtherCourseItemDto:
         locations = list(dict.fromkeys(p.area for p in course.places))
         image_url = next((p.image_url for p in course.places if p.image_url), None)
-        description = " → ".join(p.name for p in course.places[:3])
+        description = " -> ".join(p.name for p in course.places[:3])
         return OtherCourseItemDto(
-            id=f"{course_id}_sub{idx + 1}",
-            name=f"다른 추천 코스 {idx + 1}",
+            id=course.course_id,
+            course_id=course.course_id,
+            name=course.course_type,
             description=description,
             locations=locations,
             duration=course.total_duration_minutes,

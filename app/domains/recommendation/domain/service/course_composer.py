@@ -18,6 +18,9 @@ CATEGORY_TRANSITIONS: dict[str, list[str]] = {
     "activity": ["cafe", "restaurant", "walk"],
 }
 
+PRIMARY_POOL_LIMIT = 5
+FALLBACK_POOL_LIMIT = 8
+
 
 class CourseComposer:
 
@@ -28,14 +31,35 @@ class CourseComposer:
         transport: Transport,
         start_time: time,
     ) -> list[Course]:
-        category_orders = self._get_category_orders(time_slot, start_time, places_by_category)
-        courses: list[Course] = []
+        primary_orders = self._get_category_orders(
+            time_slot,
+            start_time,
+            places_by_category,
+            expanded=False,
+        )
+        primary_courses = self._collect_candidates(
+            places_by_category,
+            primary_orders,
+            transport,
+            pool_limit=PRIMARY_POOL_LIMIT,
+        )
+        unique_primary = self._deduplicate_and_sort(primary_courses)
+        if len(unique_primary) >= 3:
+            return unique_primary
 
-        for order in category_orders:
-            candidates = self._generate_candidates(places_by_category, order, transport)
-            courses.extend(candidates)
-
-        return self._deduplicate_and_sort(courses)
+        fallback_orders = self._get_category_orders(
+            time_slot,
+            start_time,
+            places_by_category,
+            expanded=True,
+        )
+        fallback_courses = self._collect_candidates(
+            places_by_category,
+            fallback_orders,
+            transport,
+            pool_limit=FALLBACK_POOL_LIMIT,
+        )
+        return self._deduplicate_and_sort(primary_courses + fallback_courses)
 
     # ── 시작 카테고리 결정 (RECOMMENDATION_SPEC.md §6) ─────────────────────────
 
@@ -67,24 +91,63 @@ class CourseComposer:
         time_slot: TimeSlot,
         start_time: time,
         places_by_category: dict[str, list[Place]],
+        expanded: bool = False,
     ) -> list[list[str]]:
         if time_slot.is_late_night():
-            return [["restaurant", "activity"], ["activity", "restaurant"]]
+            base_orders = [["restaurant", "activity"], ["activity", "restaurant"]]
+            return base_orders if not expanded else self._unique_orders(base_orders)
 
         start = self._determine_start_category(time_slot, start_time, places_by_category)
-        nexts = CATEGORY_TRANSITIONS[start]
-        available = [c for c in nexts if places_by_category.get(c)]
+        starts = [start]
+        if expanded:
+            starts.extend(
+                category
+                for category in CATEGORY_TRANSITIONS
+                if category != start and places_by_category.get(category)
+            )
 
         orders: list[list[str]] = []
-        for second in available[:2]:
-            thirds = [
-                c for c in CATEGORY_TRANSITIONS[second]
-                if c != start and c != second and places_by_category.get(c)
-            ]
-            for third in thirds[:1]:
-                orders.append([start, second, third])
+        for current_start in starts:
+            nexts = CATEGORY_TRANSITIONS[current_start]
+            available = [c for c in nexts if places_by_category.get(c)]
+            second_candidates = available if expanded else available[:2]
 
-        return orders if orders else [[start] + available[:2]]
+            current_orders: list[list[str]] = []
+            for second in second_candidates:
+                thirds = [
+                    c for c in CATEGORY_TRANSITIONS[second]
+                    if c != current_start and c != second and places_by_category.get(c)
+                ]
+                third_candidates = thirds if expanded else thirds[:1]
+                for third in third_candidates:
+                    current_orders.append([current_start, second, third])
+
+            if current_orders:
+                orders.extend(current_orders)
+            else:
+                fallback_order = [current_start] + (available[:2] if not expanded else available)
+                if len(fallback_order) >= 2:
+                    orders.append(fallback_order)
+
+        return self._unique_orders(orders)
+
+    def _collect_candidates(
+        self,
+        places_by_category: dict[str, list[Place]],
+        category_orders: list[list[str]],
+        transport: Transport,
+        pool_limit: int,
+    ) -> list[Course]:
+        courses: list[Course] = []
+        for order in category_orders:
+            candidates = self._generate_candidates(
+                places_by_category,
+                order,
+                transport,
+                pool_limit=pool_limit,
+            )
+            courses.extend(candidates)
+        return courses
 
     # ── 코스 후보 생성 ────────────────────────────────────────────────────────
 
@@ -93,8 +156,9 @@ class CourseComposer:
         places_by_category: dict[str, list[Place]],
         category_order: list[str],
         transport: Transport,
+        pool_limit: int = PRIMARY_POOL_LIMIT,
     ) -> list[Course]:
-        pools = [places_by_category.get(cat, [])[:5] for cat in category_order]
+        pools = [places_by_category.get(cat, [])[:pool_limit] for cat in category_order]
         if any(not pool for pool in pools):
             return []
 
@@ -143,4 +207,15 @@ class CourseComposer:
             if key not in seen:
                 seen.add(key)
                 unique.append(course)
+        return unique
+
+    def _unique_orders(self, orders: list[list[str]]) -> list[list[str]]:
+        seen: set[tuple[str, ...]] = set()
+        unique: list[list[str]] = []
+        for order in orders:
+            key = tuple(order)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(order)
         return unique

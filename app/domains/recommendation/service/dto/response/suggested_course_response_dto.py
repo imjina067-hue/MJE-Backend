@@ -53,6 +53,7 @@ class ActivitiesDto:
 @dataclass
 class OtherCourseItemDto:
     id: str
+    course_id: str
     name: str
     description: str
     locations: list[str]

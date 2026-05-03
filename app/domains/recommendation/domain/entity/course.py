@@ -56,6 +56,12 @@ class Course:
     def place_name_set(self) -> frozenset[str]:
         return frozenset(cp.place.name for cp in self.places)
 
+    def category_set(self) -> frozenset[str]:
+        return frozenset(cp.place.category for cp in self.places)
+
+    def first_place_name(self) -> str:
+        return self.places[0].place.name if self.places else ""
+
     def all_keywords(self) -> set[str]:
         result: set[str] = set()
         for cp in self.places:
