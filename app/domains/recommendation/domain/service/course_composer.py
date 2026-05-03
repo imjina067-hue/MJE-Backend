@@ -110,7 +110,7 @@ class CourseComposer:
         for current_start in starts:
             nexts = CATEGORY_TRANSITIONS[current_start]
             available = [c for c in nexts if places_by_category.get(c)]
-            second_candidates = available if expanded else available[:2]
+            second_candidates = available if expanded else available[:3]
 
             current_orders: list[list[str]] = []
             for second in second_candidates:
@@ -118,7 +118,7 @@ class CourseComposer:
                     c for c in CATEGORY_TRANSITIONS[second]
                     if c != current_start and c != second and places_by_category.get(c)
                 ]
-                third_candidates = thirds if expanded else thirds[:1]
+                third_candidates = thirds if expanded else thirds[:2]
                 for third in third_candidates:
                     current_orders.append([current_start, second, third])
 
