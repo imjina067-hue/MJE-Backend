@@ -23,7 +23,7 @@ class RuleScorer:
 
         remaining = [c for c in courses if c is not main]
         sub1_candidates = [c for c in remaining if not self._is_too_similar(main, c)]
-        sub1 = self._pick_diverse_course(main, sub1_candidates, "sub1")
+        sub1 = self._pick_sub1_course(main, sub1_candidates)
 
         remaining = [c for c in remaining if c is not sub1]
         anchors = [c for c in [main, sub1] if c is not None]
@@ -42,6 +42,14 @@ class RuleScorer:
     def _assign_type(self, course: Course, course_type: str) -> Course:
         course.course_type = course_type
         return course
+
+    def _pick_sub1_course(self, main: Course, candidates: list[Course]) -> Course | None:
+        if not candidates:
+            return None
+        strict = [c for c in candidates if not self._is_same_activity_type(main, c)]
+        pool = strict if strict else candidates
+        best = max(pool, key=lambda c: self._sub1_sort_key(main, c))
+        return self._assign_type(best, "sub1")
 
     def _pick_diverse_course(
         self,
@@ -89,6 +97,16 @@ class RuleScorer:
         worst_penalty = max(penalties)
         total_penalty = sum(penalties)
         return (-worst_penalty, -total_penalty, candidate.total_score)
+
+    def _sub1_sort_key(self, main: Course, candidate: Course) -> tuple:
+        different_pattern = 0 if main.category_order() == candidate.category_order() else 1
+        penalty = self._overlap_penalty(main, candidate)
+        return (different_pattern, -penalty, candidate.total_score)
+
+    def _is_same_activity_type(self, anchor: Course, candidate: Course) -> bool:
+        anchor_types = {cp.place.keywords[-1] for cp in anchor.places if cp.place.keywords}
+        cand_types = {cp.place.keywords[-1] for cp in candidate.places if cp.place.keywords}
+        return len(anchor_types & cand_types) >= 2
 
     def _is_too_similar(self, anchor: Course, candidate: Course) -> bool:
         place_overlap = len(anchor.place_name_set() & candidate.place_name_set())

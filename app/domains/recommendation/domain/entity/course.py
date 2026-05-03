@@ -62,6 +62,9 @@ class Course:
     def first_place_name(self) -> str:
         return self.places[0].place.name if self.places else ""
 
+    def category_order(self) -> tuple[str, ...]:
+        return tuple(cp.place.category for cp in self.places)
+
     def all_keywords(self) -> set[str]:
         result: set[str] = set()
         for cp in self.places:
