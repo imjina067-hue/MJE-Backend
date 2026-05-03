@@ -142,12 +142,13 @@ class CourseComposer:
         pool_limit: int,
     ) -> list[Course]:
         courses: list[Course] = []
-        for order in category_orders:
+        for order_index, order in enumerate(category_orders):
             candidates = self._generate_candidates(
                 places_by_category,
                 order,
                 transport,
                 pool_limit=pool_limit,
+                order_index=order_index,
             )
             courses.extend(candidates)
         return courses
@@ -160,17 +161,19 @@ class CourseComposer:
         category_order: list[str],
         transport: Transport,
         pool_limit: int = PRIMARY_POOL_LIMIT,
+        order_index: int = 0,
     ) -> list[Course]:
         full_pools = [places_by_category.get(cat, [])[:pool_limit] for cat in category_order]
         if any(not pool for pool in full_pools):
             return []
 
         tier = min(TIER_SIZE, pool_limit)
-        primary = [p[:tier] for p in full_pools]
+        shift = (order_index * (tier // 2)) % max(1, pool_limit - tier + 1)
+        primary = [pool[shift:shift + tier] or pool[:tier] for pool in full_pools]
 
         pool_variants: list[list[list[Place]]] = [primary]
         for i, pool in enumerate(full_pools):
-            secondary = pool[tier:]
+            secondary = pool[shift + tier:]
             if secondary:
                 variant = [secondary if j == i else primary[j] for j in range(len(full_pools))]
                 pool_variants.append(variant)
