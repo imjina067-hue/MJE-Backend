@@ -30,6 +30,9 @@ _INSUFFICIENT_MESSAGE = (
 )
 
 _IMAGE_EXCLUDE_KEYWORDS = frozenset({"협찬", "광고", "제공받아", "부동산", "분양"})
+_IMAGE_HARD_EXCLUDE_KEYWORDS = frozenset(
+    {"map", "logo", "banner", "poster", "ad", "guide", "capture"}
+)
 _BOLD_RE = re.compile(r"</?b>")
 
 ALL_CATEGORIES = ["restaurant", "cafe", "walk", "activity"]
@@ -315,14 +318,56 @@ class CreateCourseUseCase:
         suffix = CATEGORY_IMAGE_SUFFIX[category]
         query = f"{place.area} {place.name} {suffix}"
         images = await self._search.search_images(query)
+        best_url: str | None = None
+        best_score: int | None = None
         for img in images:
-            if self._is_valid_image(img):
-                return img.get("link") or img.get("thumbnail")
-        return None
+            score = self._score_image_candidate(img, place, category)
+            if score is None:
+                continue
+            image_url = img.get("link") or img.get("thumbnail")
+            if not image_url:
+                continue
+            if best_score is None or score > best_score:
+                best_score = score
+                best_url = image_url
+        return best_url
 
     def _is_valid_image(self, img: dict) -> bool:
         title = html.unescape(img.get("title", "")).lower()
         return not any(kw in title for kw in _IMAGE_EXCLUDE_KEYWORDS)
+
+    def _score_image_candidate(self, img: dict, place: Place, category: str) -> int | None:
+        title = self._normalize_text(html.unescape(img.get("title", "")))
+        link = self._normalize_text(img.get("link", ""))
+        combined = f"{title} {link}".strip()
+
+        if not combined:
+            return None
+        if not self._is_valid_image(img):
+            return None
+        if any(keyword in combined for keyword in _IMAGE_HARD_EXCLUDE_KEYWORDS):
+            return None
+
+        score = 0
+        place_name = self._normalize_text(place.name)
+        area = self._normalize_text(place.area)
+
+        if place_name and place_name in combined:
+            score += 6
+        else:
+            name_tokens = [token for token in place_name.split() if len(token) >= 2]
+            score += sum(2 for token in name_tokens if token in combined)
+
+        if area and area in combined:
+            score += 2
+
+        category_signals = _CATEGORY_SIGNALS.get(category, ())
+        score += sum(1 for signal in category_signals if self._normalize_text(signal) in combined)
+
+        if any(bad in combined for bad in ("face", "selfie", "profile", "人物")):
+            score -= 4
+
+        return score if score > 0 else None
 
     # ── Datalab 트렌드 반영 ───────────────────────────────────────────────────
 
