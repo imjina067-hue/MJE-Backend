@@ -50,6 +50,12 @@ _IMAGE_STOCK_EXCLUDE_KEYWORDS = frozenset(
 _IMAGE_SOURCE_EXCLUDE_KEYWORDS = frozenset(
     {"pinterest", "pinimg", "instagram", "cdninstagram", "kmong", "blog", "postfiles", "menupan"}
 )
+_IMAGE_MENU_EXCLUDE_KEYWORDS = frozenset(
+    {"menu", "drink", "beverage", "goods", "product", "delivery", "package", "gift", "메뉴", "음료", "상품", "배달", "포장", "선물"}
+)
+_IMAGE_PREFERRED_SOURCE_KEYWORDS = frozenset(
+    {"ldb-phinf", "phinf", "naver"}
+)
 _IMAGE_PEOPLE_EXCLUDE_KEYWORDS = frozenset(
     {"face", "selfie", "profile", "portrait", "woman", "man", "person", "people", "모델", "인물", "여자", "남자"}
 )
@@ -719,12 +725,15 @@ class CreateCourseUseCase:
             return None
         if any(keyword in combined for keyword in _IMAGE_SOURCE_EXCLUDE_KEYWORDS):
             return None
+        if any(keyword in combined for keyword in _IMAGE_MENU_EXCLUDE_KEYWORDS):
+            return None
 
         score = 0
         place_name = self._normalize_text(place.name)
         area = self._normalize_text(place.area)
+        exact_name_match = bool(place_name and place_name in combined)
 
-        if place_name and place_name in combined:
+        if exact_name_match:
             score += 6
         else:
             name_tokens = [token for token in place_name.split() if len(token) >= 2]
@@ -732,10 +741,15 @@ class CreateCourseUseCase:
 
         if area and area in combined:
             score += 2
+        if any(keyword in combined for keyword in _IMAGE_PREFERRED_SOURCE_KEYWORDS):
+            score += 2
 
         category_signals = _CATEGORY_SIGNALS.get(category, ())
         score += sum(1 for signal in category_signals if self._normalize_text(signal) in combined)
         score += self._activity_image_bonus(place, combined)
+
+        if category in {"restaurant", "cafe"} and not exact_name_match:
+            return None
 
         if any(bad in combined for bad in ("face", "selfie", "profile", "人物")):
             score -= 4
@@ -747,7 +761,8 @@ class CreateCourseUseCase:
         ):
             score -= 6
 
-        return score if score > 0 else None
+        minimum_score = 5 if category == "activity" else 7
+        return score if score >= minimum_score else None
 
     def _image_suffix_for_place(self, place: Place, category: str) -> str:
         if category == "activity" and place.activity_subtype:
