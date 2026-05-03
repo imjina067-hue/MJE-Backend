@@ -18,9 +18,10 @@ class NaverDatalabClient:
             "X-Naver-Client-Secret": settings.NAVER_DATALAB_CLIENT_SECRET,
             "Content-Type": "application/json",
         }
+        self._client = httpx.AsyncClient(timeout=10.0)
 
     async def get_trend_scores(self, keywords: list[str]) -> dict[str, float]:
-        """최근 30일 검색 트렌드 — 0~1 사이로 정규화하여 반환"""
+        """Return normalized 30-day search trend scores in the 0~1 range."""
         if not keywords:
             return {}
 
@@ -35,21 +36,22 @@ class NaverDatalabClient:
             "keywordGroups": keyword_groups,
         }
 
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                _BASE_URL,
-                headers=self._headers,
-                json=payload,
-                timeout=10.0,
-            )
-            resp.raise_for_status()
-            data = resp.json()
+        resp = await self._client.post(
+            _BASE_URL,
+            headers=self._headers,
+            json=payload,
+        )
+        resp.raise_for_status()
+        data = resp.json()
 
         result: dict[str, float] = {}
         for item in data.get("results", []):
             keyword = item.get("title", "")
             data_points = item.get("data", [])
             if data_points:
-                avg = sum(d.get("ratio", 0) for d in data_points) / len(data_points)
+                avg = sum(point.get("ratio", 0) for point in data_points) / len(data_points)
                 result[keyword] = avg / 100.0
         return result
+
+    async def aclose(self) -> None:
+        await self._client.aclose()

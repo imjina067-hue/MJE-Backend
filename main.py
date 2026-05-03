@@ -13,6 +13,7 @@ from app.domains.recommendation.controller.api.recommendation_router import rout
 from app.domains.recommendation.controller.api.suggestion_router import router as suggestion_router
 from app.infrastructure.config import get_settings
 from app.infrastructure.database.create_tables import create_tables
+from app.infrastructure.dependencies import close_external_clients
 from app.infrastructure.exception_handler import register_exception_handlers
 from app.infrastructure.logging_middleware import LoggingMiddleware
 
@@ -20,7 +21,10 @@ from app.infrastructure.logging_middleware import LoggingMiddleware
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await create_tables()
-    yield
+    try:
+        yield
+    finally:
+        await close_external_clients()
 
 
 app = FastAPI(title="Pioneer Team Backend", lifespan=lifespan)

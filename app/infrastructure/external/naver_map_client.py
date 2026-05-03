@@ -13,7 +13,7 @@ _WALKING_URL = "https://naveropenapi.apigw.ntruss.com/map-direction/v1/walking"
 _TRANSPORT_URL = {
     "car": _DRIVING_URL,
     "walk": _WALKING_URL,
-    "public_transit": _DRIVING_URL,  # transit API는 별도 상품 — driving으로 근사
+    "public_transit": _DRIVING_URL,
 }
 
 _ROUTE_KEY = {
@@ -29,6 +29,7 @@ class NaverMapClient:
         settings = get_settings()
         self._client_id = settings.NAVER_MAP_CLIENT_ID
         self._client_secret = settings.NAVER_MAP_CLIENT_SECRET
+        self._client = httpx.AsyncClient(timeout=10.0)
 
     def _is_configured(self) -> bool:
         return bool(self._client_id and self._client_secret)
@@ -52,16 +53,15 @@ class NaverMapClient:
             "X-NCP-APIGW-API-KEY": self._client_secret,
         }
         params = {
-            "start": f"{start_lng},{start_lat}",  # Naver API: 경도,위도 순
+            "start": f"{start_lng},{start_lat}",
             "goal": f"{end_lng},{end_lat}",
             "option": route_key,
         }
 
         try:
-            async with httpx.AsyncClient() as client:
-                resp = await client.get(url, headers=headers, params=params, timeout=10.0)
-                resp.raise_for_status()
-                data = resp.json()
+            resp = await self._client.get(url, headers=headers, params=params)
+            resp.raise_for_status()
+            data = resp.json()
         except Exception:
             return None
 
@@ -72,8 +72,6 @@ class NaverMapClient:
         summary = routes[0].get("summary", {})
         duration_ms = summary.get("duration", 0)
         distance_m = summary.get("distance", 0)
-
-        # Naver 응답 path: [[경도, 위도], ...] → 내부 표준 (위도, 경도)으로 변환
         raw_path = routes[0].get("path", [])
         path = [(lat, lng) for lng, lat in raw_path]
 
@@ -82,3 +80,6 @@ class NaverMapClient:
             distance_meters=int(distance_m),
             path=path,
         )
+
+    async def aclose(self) -> None:
+        await self._client.aclose()

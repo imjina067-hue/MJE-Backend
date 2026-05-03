@@ -3,6 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 
 from fastapi import Depends
+from contextlib import suppress
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domains.courses.repository.event_repository_impl import EventRepositoryImpl as CoursesEventRepositoryImpl
@@ -91,3 +92,12 @@ def get_send_email_usecase(
 
 def get_course_detail_usecase() -> GetCourseDetailUseCase:
     return GetCourseDetailUseCase(course_store=_course_store())
+
+
+async def close_external_clients() -> None:
+    with suppress(Exception):
+        await _naver_search_client().aclose()
+    with suppress(Exception):
+        await _naver_datalab_client().aclose()
+    with suppress(Exception):
+        await _naver_map_client().aclose()
