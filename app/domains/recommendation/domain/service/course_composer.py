@@ -200,14 +200,17 @@ class CourseComposer:
     # ── 중복 제거 및 정렬 ─────────────────────────────────────────────────────
 
     def _deduplicate_and_sort(self, courses: list[Course]) -> list[Course]:
-        seen: set[frozenset[str]] = set()
         unique: list[Course] = []
         for course in sorted(courses, key=lambda c: c.total_score, reverse=True):
-            key = course.place_name_set()
-            if key not in seen:
-                seen.add(key)
+            if not any(self._is_near_duplicate(accepted, course) for accepted in unique):
                 unique.append(course)
         return unique
+
+    def _is_near_duplicate(self, a: Course, b: Course) -> bool:
+        return (
+            len(a.place_name_set() & b.place_name_set()) >= 2
+            or a.first_place_name() == b.first_place_name()
+        )
 
     def _unique_orders(self, orders: list[list[str]]) -> list[list[str]]:
         seen: set[tuple[str, ...]] = set()
