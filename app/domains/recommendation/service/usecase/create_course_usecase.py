@@ -491,6 +491,13 @@ class CreateCourseUseCase:
         if any(bad in combined for bad in ("face", "selfie", "profile", "人物")):
             score -= 4
 
+        if any(keyword in combined for keyword in _IMAGE_PEOPLE_EXCLUDE_KEYWORDS):
+            score -= 8
+        if category in {"restaurant", "cafe"} and any(
+            keyword in combined for keyword in _IMAGE_SCENIC_EXCLUDE_KEYWORDS
+        ):
+            score -= 6
+
         return score if score > 0 else None
 
     # ── 지도 API 동선 보강 ─────────────────────────────────────────────────────
@@ -521,17 +528,33 @@ class CreateCourseUseCase:
         recommendation_id: str,
     ) -> CreateCourseResponseDto:
         message = _INSUFFICIENT_MESSAGE if total_courses < 3 else None
+        used_cover_urls: set[str] = set()
+        used_cover_categories: set[str] = set()
+        main_course = (
+            self._to_course_dto(main, time_slot, str(uuid.uuid4()), used_cover_urls, used_cover_categories)
+            if main
+            else None
+        )
         sub_courses = [
-            self._to_course_dto(c, time_slot, str(uuid.uuid4())) for c in [sub1, sub2] if c is not None
+            self._to_course_dto(c, time_slot, str(uuid.uuid4()), used_cover_urls, used_cover_categories)
+            for c in [sub1, sub2]
+            if c is not None
         ]
         return CreateCourseResponseDto(
             course_id=recommendation_id,
-            main_course=self._to_course_dto(main, time_slot, str(uuid.uuid4())) if main else None,
+            main_course=main_course,
             sub_courses=sub_courses,
             message=message,
         )
 
-    def _to_course_dto(self, course: Course, time_slot: TimeSlot, course_id: str) -> CourseResultDto:
+    def _to_course_dto(
+        self,
+        course: Course,
+        time_slot: TimeSlot,
+        course_id: str,
+        used_cover_urls: set[str] | None = None,
+        used_cover_categories: set[str] | None = None,
+    ) -> CourseResultDto:
         places = [
             PlaceResultDto(
                 visit_order=cp.visit_order,
@@ -550,14 +573,23 @@ class CreateCourseUseCase:
             )
             for cp in course.places
         ]
+        image_url, image_category = self._select_course_cover_image_v2(
+            course,
+            used_cover_urls or set(),
+            used_cover_categories or set(),
+        )
+        if image_url and used_cover_urls is not None:
+            used_cover_urls.add(image_url)
+        if image_category and used_cover_categories is not None:
+            used_cover_categories.add(image_category)
         return CourseResultDto(
             course_id=course_id,
             course_type=course.course_type,
             transport=course.transport,
             total_duration_minutes=course.total_duration_minutes(),
-            title=self._build_course_title(course, time_slot),
+            title=self._build_course_title_v2(course, time_slot),
             description=self._build_course_description(course, time_slot),
-            image_url=self._select_course_cover_image(course),
+            image_url=image_url,
             places=places,
         )
 
@@ -688,6 +720,201 @@ class CreateCourseUseCase:
         return best_url if best_score > 0 else None
 
     # ── 유틸 ──────────────────────────────────────────────────────────────────
+
+    def _build_course_title_v2(self, course: Course, time_slot: TimeSlot) -> str:
+        area = course.places[0].place.area if course.places else ""
+        lead_place = self._select_title_lead_place(course)
+        secondary_place = self._select_title_secondary_place(course, lead_place)
+        lead_label = self._build_place_title_block(lead_place) if lead_place else ""
+        secondary_label = self._build_place_title_phrase(secondary_place) if secondary_place else ""
+
+        if lead_label and secondary_label:
+            body = f"{self._join_with_pair_particle(lead_label, secondary_label)} 데이트"
+        elif lead_label:
+            body = f"{lead_label} 데이트"
+        else:
+            body = self._default_time_title(time_slot)
+
+        return f"{area} {body}".strip()
+
+    def _select_title_lead_place(self, course: Course) -> Place | None:
+        ranked = sorted(
+            (cp.place for cp in course.places),
+            key=lambda place: (self._title_place_priority(place), place.score),
+            reverse=True,
+        )
+        return ranked[0] if ranked else None
+
+    def _select_title_secondary_place(self, course: Course, lead_place: Place | None) -> Place | None:
+        if lead_place is None:
+            return None
+
+        lead_phrase = self._build_place_title_phrase(lead_place)
+        candidates = [cp.place for cp in course.places if cp.place.name != lead_place.name]
+        differentiated = [
+            place for place in candidates if self._build_place_title_phrase(place) != lead_phrase
+        ]
+        pool = differentiated or candidates
+        if not pool:
+            return None
+        return max(pool, key=lambda place: (self._title_place_priority(place), place.score))
+
+    def _build_place_title_block(self, place: Place) -> str:
+        phrase = self._build_place_title_phrase(place)
+        hint = self._build_place_hint(place)
+        if hint and phrase:
+            return f"{hint} {phrase}"
+        return hint or phrase
+
+    def _build_place_title_phrase(self, place: Place | None) -> str:
+        if place is None:
+            return ""
+
+        text = self._normalize_text(
+            " ".join([place.name, place.main_description, place.brief_description, " ".join(place.keywords)])
+        )
+
+        if place.category == "restaurant":
+            if "brunch" in text or "조식" in text:
+                return "브런치"
+            if "이자카야" in text or "포차" in text or "술집" in text:
+                return "이자카야"
+            if "피자" in text:
+                return "피자 맛집"
+            if "버거" in text:
+                return "버거 맛집"
+            return "맛집"
+
+        if place.category == "cafe":
+            if "와인바" in text or "칵테일바" in text or "lp바" in text:
+                return "바"
+            if "디저트" in text or "베이커리" in text or "빙수" in text:
+                return "디저트 카페"
+            if "브런치" in text:
+                return "브런치 카페"
+            return "카페"
+
+        if any(keyword in text for keyword in ("전시", "갤러리", "미술관", "박물관")):
+            return "전시"
+        if any(keyword in text for keyword in ("공원", "산책", "루프탑", "야경")):
+            return "산책"
+        if any(keyword in text for keyword in ("영화", "자동차극장")):
+            return "영화"
+        if any(keyword in text for keyword in ("공방", "원데이", "도자기", "향수")):
+            return "체험"
+        if any(keyword in text for keyword in ("볼링", "방탈출", "클라이밍", "보드게임")):
+            return "액티비티"
+        if any(keyword in text for keyword in ("편집숍", "소품샵", "빈티지", "쇼핑몰", "시장")):
+            return "쇼핑"
+        if any(keyword in text for keyword in ("와인바", "칵테일바", "lp바", "루프탑바", "홀덤", "주점")):
+            return "야경"
+        return "데이트"
+
+    def _build_place_hint(self, place: Place | None) -> str:
+        if place is None:
+            return ""
+
+        name = re.sub(r"\s*\([^)]*\)", "", place.name).strip()
+        if not name:
+            return ""
+        name = re.sub(r"\s+(본점|별관|1호점|2호점)$", "", name).strip()
+        if len(name) <= 12:
+            return name
+        first_token = name.split()[0]
+        return first_token[:12]
+
+    def _title_place_priority(self, place: Place) -> int:
+        phrase = self._build_place_title_phrase(place)
+        priority_map = {
+            "전시": 10,
+            "체험": 10,
+            "영화": 9,
+            "액티비티": 9,
+            "산책": 8,
+            "쇼핑": 8,
+            "야경": 8,
+            "디저트 카페": 7,
+            "브런치 카페": 7,
+            "브런치": 7,
+            "이자카야": 7,
+            "바": 7,
+            "피자 맛집": 6,
+            "버거 맛집": 6,
+            "카페": 5,
+            "맛집": 5,
+            "데이트": 4,
+        }
+        return priority_map.get(phrase, 4)
+
+    def _default_time_title(self, time_slot: TimeSlot) -> str:
+        default_map = {
+            "morning": "아침 데이트 코스",
+            "lunch": "점심 데이트 코스",
+            "afternoon": "오후 데이트 코스",
+            "evening": "저녁 데이트 코스",
+            "late_night": "심야 데이트 코스",
+        }
+        return default_map.get(time_slot.value, "데이트 코스")
+
+    def _join_with_pair_particle(self, first: str, second: str) -> str:
+        particle = "과" if self._has_final_consonant(first) else "와"
+        return f"{first}{particle} {second}"
+
+    def _has_final_consonant(self, text: str) -> bool:
+        stripped = text.strip()
+        if not stripped:
+            return False
+        last = stripped[-1]
+        if not ("가" <= last <= "힣"):
+            return False
+        return (ord(last) - ord("가")) % 28 != 0
+
+    def _select_course_cover_image_v2(
+        self,
+        course: Course,
+        used_image_urls: set[str],
+        used_image_categories: set[str],
+    ) -> tuple[str | None, str | None]:
+        ranked_candidates: list[tuple[int, str, str]] = []
+        has_food_or_cafe = any(cp.place.category in {"restaurant", "cafe"} for cp in course.places)
+
+        for cp in course.places:
+            image_url = cp.place.image_url
+            if not image_url:
+                continue
+
+            score = 6
+            if cp.place.category == "restaurant":
+                score = 14
+            elif cp.place.category == "cafe":
+                score = 12
+
+            combined = self._normalize_text(
+                " ".join([image_url, cp.place.name, cp.place.main_description, " ".join(cp.place.keywords)])
+            )
+            if any(keyword in combined for keyword in _IMAGE_STOCK_EXCLUDE_KEYWORDS):
+                score -= 12
+            if any(keyword in combined for keyword in _IMAGE_PEOPLE_EXCLUDE_KEYWORDS):
+                score -= 12
+            if has_food_or_cafe and cp.place.category == "activity" and any(
+                keyword in combined for keyword in _IMAGE_SCENIC_EXCLUDE_KEYWORDS
+            ):
+                score -= 14
+            if cp.place.category in used_image_categories:
+                score -= 5
+            if image_url in used_image_urls:
+                score -= 10
+
+            ranked_candidates.append((score, image_url, cp.place.category))
+
+        if not ranked_candidates:
+            return None, None
+
+        ranked_candidates.sort(key=lambda item: item[0], reverse=True)
+        best_score, best_url, best_category = ranked_candidates[0]
+        if best_score <= 0:
+            return None, None
+        return best_url, best_category
 
     def _log_recommendation_diagnostics(
         self,
