@@ -529,18 +529,18 @@ class CreateCourseUseCase:
         if not normalized_area:
             return True
 
-        if self._should_relax_area_matching(normalized_area):
-            return True
-
         haystack = self._normalize_text(
             " ".join(
                 part
-                for part in [place.area, place.address, place.road_address]
+                for part in [place.name, place.area, place.address, place.road_address]
                 if part
             )
         )
         if not haystack:
             return False
+
+        if self._should_relax_area_matching(normalized_area):
+            return normalized_area in haystack
 
         return all(token in haystack for token in normalized_area.split())
 
