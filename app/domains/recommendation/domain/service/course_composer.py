@@ -100,12 +100,14 @@ class CourseComposer:
 
         start = self._determine_start_category(time_slot, start_time, places_by_category)
         starts = [start]
+        alt_starts = [
+            c for c in CATEGORY_TRANSITIONS
+            if c != start and places_by_category.get(c)
+        ]
         if expanded:
-            starts.extend(
-                category
-                for category in CATEGORY_TRANSITIONS
-                if category != start and places_by_category.get(category)
-            )
+            starts.extend(alt_starts)
+        else:
+            starts.extend(alt_starts[:2])
 
         orders: list[list[str]] = []
         for current_start in starts:
