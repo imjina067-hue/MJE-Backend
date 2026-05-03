@@ -48,7 +48,7 @@ _IMAGE_STOCK_EXCLUDE_KEYWORDS = frozenset(
     {"unsplash", "pexels", "pixabay", "shutterstock", "stock"}
 )
 _IMAGE_SOURCE_EXCLUDE_KEYWORDS = frozenset(
-    {"pinterest", "pinimg", "instagram", "cdninstagram", "kmong", "blog", "postfiles"}
+    {"pinterest", "pinimg", "instagram", "cdninstagram", "kmong", "blog", "postfiles", "menupan"}
 )
 _IMAGE_PEOPLE_EXCLUDE_KEYWORDS = frozenset(
     {"face", "selfie", "profile", "portrait", "woman", "man", "person", "people", "모델", "인물", "여자", "남자"}
@@ -881,9 +881,9 @@ class CreateCourseUseCase:
         }.get(time_slot.value, "즐기는")
 
         if len(segments) >= 3:
-            return f"{segments[0]} 후 {segments[1]}에서 쉬고 {segments[2]} {time_context} 데이트 코스입니다."
+            return f"{segments[0]}, {segments[1]}, {segments[2]} {time_context} 데이트 코스입니다."
         if len(segments) == 2:
-            return f"{segments[0]} 후 {segments[1]} {time_context} 데이트 코스입니다."
+            return f"{segments[0]}고 {segments[1]}는 {time_context} 데이트 코스입니다."
         if len(segments) == 1:
             return f"{segments[0]} 중심으로 구성한 {time_context} 데이트 코스입니다."
         return f"{time_context} 데이트 코스입니다."
@@ -898,44 +898,44 @@ class CreateCourseUseCase:
 
         if category == "restaurant":
             if "브런치" in text or "조식" in text:
-                return "브런치를 즐기고"
+                return "브런치를 즐기"
             if "이자카야" in text or "술집" in text or "포차" in text:
-                return "식사와 한잔을 즐기고"
-            return "맛집에서 식사하고"
+                return "식사와 한잔을 즐기"
+            return "맛집에서 식사하"
 
         if category == "cafe":
             if "와인바" in text or "칵테일바" in text or "바" in text:
-                return "와인바에서 분위기를 이어가고"
+                return "와인바에서 분위기를 이어가"
             if "디저트" in text:
-                return "디저트 카페에서 쉬고"
-            return "감성 카페에서 쉬고"
+                return "디저트 카페에서 쉬"
+            return "감성 카페에서 쉬"
 
         if activity_subtype == "culture":
-            return "전시와 문화를 즐기고"
+            return "전시와 문화를 즐기"
         if activity_subtype == "experience":
-            return "체험 데이트를 즐기고"
+            return "체험 데이트를 즐기"
         if activity_subtype == "walk":
-            return "산책과 풍경을 즐기고"
+            return "산책과 풍경을 즐기"
         if activity_subtype == "nightlife":
-            return "밤 분위기를 즐기고"
+            return "밤 분위기를 즐기"
         if activity_subtype == "shopping":
-            return "쇼핑과 구경을 즐기고"
+            return "쇼핑과 구경을 즐기"
 
         if any(keyword in text for keyword in ("전시", "갤러리", "미술관", "박물관")):
-            return "전시를 즐기는"
+            return "전시를 즐기"
         if any(keyword in text for keyword in ("공원", "산책", "루프탑", "야경")):
-            return "산책을 즐기는"
+            return "산책을 즐기"
         if any(keyword in text for keyword in ("영화", "자동차극장")):
-            return "영화를 즐기는"
+            return "영화를 즐기"
         if any(keyword in text for keyword in ("공방", "원데이", "도자기", "향수")):
-            return "체험을 즐기는"
+            return "체험을 즐기"
         if any(keyword in text for keyword in ("볼링", "방탈출", "클라이밍", "보드게임")):
-            return "액티브 데이트를 즐기는"
+            return "액티브 데이트를 즐기"
         if any(keyword in text for keyword in ("편집숍", "소품샵", "빈티지", "쇼핑몰", "시장")):
-            return "쇼핑을 즐기는"
+            return "쇼핑을 즐기"
         if any(keyword in text for keyword in ("와인바", "칵테일바", "lp바", "루프탑바", "펍", "주점")):
-            return "밤 분위기를 즐기는"
-        return "데이트를 즐기는"
+            return "밤 분위기를 즐기"
+        return "데이트를 즐기"
 
     def _select_course_cover_image(self, course: Course) -> str | None:
         ranked_candidates: list[tuple[int, str]] = []
