@@ -3,6 +3,13 @@ from typing import Optional
 
 
 @dataclass
+class CourseTitlePlaceDto:
+    name: str
+    category: str
+    sub_category: str
+
+
+@dataclass
 class PlaceResultDto:
     visit_order: int
     name: str
@@ -25,6 +32,9 @@ class CourseResultDto:
     course_type: str          # "main" | "sub1" | "sub2"
     transport: str
     total_duration_minutes: int
+    region: str
+    main_place: Optional[CourseTitlePlaceDto]
+    sub_places: list[CourseTitlePlaceDto]
     title: str
     description: str
     image_url: Optional[str] = None
