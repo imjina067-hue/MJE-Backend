@@ -23,6 +23,7 @@ from app.domains.recommendation.domain.value_object.time_slot import TimeSlot
 from app.domains.recommendation.domain.value_object.transport import Transport
 from app.domains.recommendation.service.dto.request.create_course_request_dto import CreateCourseRequestDto
 from app.domains.recommendation.service.dto.response.create_course_response_dto import (
+    CourseTitlePlaceDto,
     CourseResultDto,
     CreateCourseResponseDto,
     PlaceResultDto,
@@ -64,6 +65,21 @@ _IMAGE_SCENIC_EXCLUDE_KEYWORDS = frozenset(
 )
 _IMAGE_LOOKUP_LIMIT_PER_REQUEST = 4
 _BOLD_RE = re.compile(r"</?b>")
+_GENERIC_TITLE_PHRASES = frozenset({
+    "맛집",
+    "카페",
+    "디저트 카페",
+    "브런치 카페",
+    "브런치",
+    "전시",
+    "체험",
+    "산책",
+    "영화",
+    "쇼핑",
+    "야경",
+    "액티비티",
+    "데이트",
+})
 
 ALL_CATEGORIES = ["restaurant", "cafe", "activity"]
 
@@ -179,6 +195,7 @@ class CreateCourseUseCase:
             main,
             sub1,
             sub2,
+            dto.area,
             time_slot,
             len(courses),
             recommendation_id,
@@ -809,6 +826,7 @@ class CreateCourseUseCase:
         main: Course | None,
         sub1: Course | None,
         sub2: Course | None,
+        region: str,
         time_slot: TimeSlot,
         total_courses: int,
         recommendation_id: str,
@@ -816,13 +834,30 @@ class CreateCourseUseCase:
         message = _INSUFFICIENT_MESSAGE if total_courses < 3 else None
         used_cover_urls: set[str] = set()
         used_cover_categories: set[str] = set()
+        used_title_keys: set[str] = set()
         main_course = (
-            self._to_course_dto(main, time_slot, str(uuid.uuid4()), used_cover_urls, used_cover_categories)
+            self._to_course_dto(
+                main,
+                region,
+                time_slot,
+                str(uuid.uuid4()),
+                used_cover_urls,
+                used_cover_categories,
+                used_title_keys,
+            )
             if main
             else None
         )
         sub_courses = [
-            self._to_course_dto(c, time_slot, str(uuid.uuid4()), used_cover_urls, used_cover_categories)
+            self._to_course_dto(
+                c,
+                region,
+                time_slot,
+                str(uuid.uuid4()),
+                used_cover_urls,
+                used_cover_categories,
+                used_title_keys,
+            )
             for c in [sub1, sub2]
             if c is not None
         ]
@@ -836,10 +871,12 @@ class CreateCourseUseCase:
     def _to_course_dto(
         self,
         course: Course,
+        region: str,
         time_slot: TimeSlot,
         course_id: str,
         used_cover_urls: set[str] | None = None,
         used_cover_categories: set[str] | None = None,
+        used_title_keys: set[str] | None = None,
     ) -> CourseResultDto:
         places = [
             PlaceResultDto(
@@ -868,15 +905,63 @@ class CreateCourseUseCase:
             used_cover_urls.add(image_url)
         if image_category and used_cover_categories is not None:
             used_cover_categories.add(image_category)
+        main_place = self._select_title_lead_place(course, used_title_keys)
+        main_title_key = self._build_place_title_keyword(main_place)
+        if main_title_key and used_title_keys is not None:
+            used_title_keys.add(main_title_key)
         return CourseResultDto(
             course_id=course_id,
             course_type=course.course_type,
             transport=course.transport,
             total_duration_minutes=course.total_duration_minutes(),
-            title=self._build_course_title_v2(course, time_slot),
+            region=region,
+            main_place=self._to_title_place_dto(main_place),
+            sub_places=self._build_sub_place_dtos(course, main_place),
+            title=self._build_course_title_v2(course, time_slot, main_place),
             description=self._build_course_description(course, time_slot),
             image_url=image_url,
             places=places,
+        )
+
+    def _build_sub_place_dtos(
+        self,
+        course: Course,
+        main_place: Place | None,
+    ) -> list[CourseTitlePlaceDto]:
+        title_places: list[CourseTitlePlaceDto] = []
+        seen: set[tuple[str, str, str]] = set()
+        main_category = main_place.category if main_place is not None else None
+        main_title_key = self._build_place_title_keyword(main_place)
+
+        candidates = sorted(
+            (cp.place for cp in course.places if main_place is None or cp.place.name != main_place.name),
+            key=lambda place: (
+                place.category != main_category,
+                self._build_place_title_keyword(place) != main_title_key,
+                self._title_place_priority(place),
+                place.score,
+            ),
+            reverse=True,
+        )
+
+        for place in candidates:
+            title_place = self._to_title_place_dto(place)
+            key = (title_place.name, title_place.category, title_place.sub_category)
+            if key in seen:
+                continue
+            seen.add(key)
+            title_places.append(title_place)
+
+        return title_places
+
+    def _to_title_place_dto(self, place: Place | None) -> CourseTitlePlaceDto | None:
+        if place is None:
+            return None
+
+        return CourseTitlePlaceDto(
+            name=place.name,
+            category=place.category,
+            sub_category=self._build_place_title_keyword(place),
         )
 
     def _build_course_title(self, course: Course, time_slot: TimeSlot) -> str:
@@ -1026,38 +1111,60 @@ class CreateCourseUseCase:
 
     # ── 유틸 ──────────────────────────────────────────────────────────────────
 
-    def _build_course_title_v2(self, course: Course, time_slot: TimeSlot) -> str:
-        area = course.places[0].place.area if course.places else ""
-        lead_place = self._select_title_lead_place(course)
+    def _build_course_title_v2(
+        self,
+        course: Course,
+        time_slot: TimeSlot,
+        lead_place: Place | None = None,
+    ) -> str:
+        lead_place = lead_place or self._select_title_lead_place(course)
         secondary_place = self._select_title_secondary_place(course, lead_place)
-        lead_label = self._build_place_title_block(lead_place) if lead_place else ""
-        secondary_label = self._build_place_title_phrase(secondary_place) if secondary_place else ""
+        lead_label = self._build_place_title_keyword(lead_place) if lead_place else ""
+        secondary_label = self._build_place_title_keyword(secondary_place) if secondary_place else ""
 
         if lead_label and secondary_label:
-            body = f"{self._join_with_pair_particle(lead_label, secondary_label)} 데이트"
-        elif lead_label:
-            body = f"{lead_label} 데이트"
-        else:
-            body = self._default_time_title(time_slot)
+            if course.course_type == "main":
+                return f"{lead_label}에서 시작해 {secondary_label}까지 즐기는 데이트"
+            if course.course_type == "sub1":
+                return f"{secondary_label}와 {self._with_object_particle(lead_label)} 함께 담은 데이트"
+            return f"{self._with_object_particle(secondary_label)} 즐기고 {lead_label}에서 쉬어가는 데이트"
+        if lead_label:
+            if course.course_type == "main":
+                return f"{self._with_object_particle(lead_label)} 중심으로 여유롭게 이어지는 데이트"
+            if course.course_type == "sub1":
+                return f"{lead_label}의 매력을 가볍게 즐기는 데이트"
+            return f"{lead_label}에서 천천히 분위기를 즐기는 데이트"
+        return self._default_time_title(time_slot)
 
-        return f"{area} {body}".strip()
-
-    def _select_title_lead_place(self, course: Course) -> Place | None:
+    def _select_title_lead_place(
+        self,
+        course: Course,
+        used_title_keys: set[str] | None = None,
+    ) -> Place | None:
         ranked = sorted(
             (cp.place for cp in course.places),
             key=lambda place: (self._title_place_priority(place), place.score),
             reverse=True,
         )
-        return ranked[0] if ranked else None
+        if not ranked:
+            return None
+        if used_title_keys:
+            unused = [
+                place for place in ranked
+                if self._build_place_title_keyword(place) not in used_title_keys
+            ]
+            if unused:
+                return unused[0]
+        return ranked[0]
 
     def _select_title_secondary_place(self, course: Course, lead_place: Place | None) -> Place | None:
         if lead_place is None:
             return None
 
-        lead_phrase = self._build_place_title_phrase(lead_place)
+        lead_title_key = self._build_place_title_keyword(lead_place)
         candidates = [cp.place for cp in course.places if cp.place.name != lead_place.name]
         differentiated = [
-            place for place in candidates if self._build_place_title_phrase(place) != lead_phrase
+            place for place in candidates if self._build_place_title_keyword(place) != lead_title_key
         ]
         pool = differentiated or candidates
         if not pool:
@@ -1065,11 +1172,7 @@ class CreateCourseUseCase:
         return max(pool, key=lambda place: (self._title_place_priority(place), place.score))
 
     def _build_place_title_block(self, place: Place) -> str:
-        phrase = self._build_place_title_phrase(place)
-        hint = self._build_place_hint(place)
-        if hint and phrase:
-            return f"{hint} {phrase}"
-        return hint or phrase
+        return self._build_place_title_keyword(place)
 
     def _build_place_title_phrase(self, place: Place | None) -> str:
         if place is None:
@@ -1126,6 +1229,20 @@ class CreateCourseUseCase:
             return "야경"
         return "데이트"
 
+    def _build_place_title_keyword(self, place: Place | None) -> str:
+        phrase = self._build_place_title_phrase(place)
+        if place is None:
+            return phrase
+
+        hint = self._build_place_hint(place)
+        if not hint:
+            return phrase
+        if phrase not in _GENERIC_TITLE_PHRASES:
+            return phrase
+        if hint in phrase:
+            return phrase
+        return f"{hint} {phrase}"
+
     def _build_place_hint(self, place: Place | None) -> str:
         if place is None:
             return ""
@@ -1175,6 +1292,10 @@ class CreateCourseUseCase:
     def _join_with_pair_particle(self, first: str, second: str) -> str:
         particle = "과" if self._has_final_consonant(first) else "와"
         return f"{first}{particle} {second}"
+
+    def _with_object_particle(self, text: str) -> str:
+        particle = "을" if self._has_final_consonant(text) else "를"
+        return f"{text}{particle}"
 
     def _has_final_consonant(self, text: str) -> bool:
         stripped = text.strip()

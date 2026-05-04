@@ -5,6 +5,7 @@ from typing import Optional
 from pydantic import BaseModel
 
 from app.domains.recommendation.service.dto.response.create_course_response_dto import (
+    CourseTitlePlaceDto,
     CourseResultDto,
     CreateCourseResponseDto,
     PlaceResultDto,
@@ -27,9 +28,18 @@ class PlaceResponseItem(BaseModel):
     routePathToNext: list[list[float]] = []  # [[lat, lng], ...]
 
 
+class CourseTitlePlaceResponseItem(BaseModel):
+    name: str
+    category: str
+    subCategory: str
+
+
 class CourseResponseItem(BaseModel):
     courseId: str
     courseType: str
+    region: str
+    mainPlace: Optional[CourseTitlePlaceResponseItem]
+    subPlaces: list[CourseTitlePlaceResponseItem]
     title: str
     description: str
     transport: str
@@ -60,12 +70,25 @@ class CreateCourseResponseForm(BaseModel):
         return CourseResponseItem(
             courseId=course.course_id,
             courseType=course.course_type,
+            region=course.region,
+            mainPlace=cls._map_title_place(course.main_place),
+            subPlaces=[cls._map_title_place(place) for place in course.sub_places],
             title=course.title,
             description=course.description,
             transport=course.transport,
             totalDurationMinutes=course.total_duration_minutes,
             imageUrl=course.image_url,
             places=[cls._map_place(p) for p in course.places],
+        )
+
+    @classmethod
+    def _map_title_place(cls, place: CourseTitlePlaceDto | None) -> Optional[CourseTitlePlaceResponseItem]:
+        if place is None:
+            return None
+        return CourseTitlePlaceResponseItem(
+            name=place.name,
+            category=place.category,
+            subCategory=place.sub_category,
         )
 
     @classmethod
