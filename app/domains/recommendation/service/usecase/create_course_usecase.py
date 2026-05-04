@@ -10,7 +10,9 @@ from app.domains.recommendation.domain.entity.course import Course
 from app.domains.recommendation.domain.entity.place import Place
 from app.domains.recommendation.domain.service.course_composer import CourseComposer
 from app.domains.recommendation.domain.service.recommendation_config import (
-    ACTIVITY_FALLBACK_SEARCH_KEYWORDS,
+    ACTIVITY_SUBTYPE_FALLBACK_SEARCH_KEYWORDS,
+    ACTIVITY_SUBTYPE_SEARCH_KEYWORDS,
+    ACTIVITY_SUBTYPE_SIGNALS,
     CATEGORY_SEARCH_KEYWORDS,
     MIN_ACTIVITY_CANDIDATES,
     TOP_N_CANDIDATES,
@@ -45,12 +47,22 @@ _IMAGE_HARD_EXCLUDE_KEYWORDS = frozenset(
 _IMAGE_STOCK_EXCLUDE_KEYWORDS = frozenset(
     {"unsplash", "pexels", "pixabay", "shutterstock", "stock"}
 )
+_IMAGE_SOURCE_EXCLUDE_KEYWORDS = frozenset(
+    {"pinterest", "pinimg", "instagram", "cdninstagram", "kmong", "blog", "postfiles", "menupan"}
+)
+_IMAGE_MENU_EXCLUDE_KEYWORDS = frozenset(
+    {"menu", "drink", "beverage", "goods", "product", "delivery", "package", "gift", "메뉴", "음료", "상품", "배달", "포장", "선물"}
+)
+_IMAGE_PREFERRED_SOURCE_KEYWORDS = frozenset(
+    {"ldb-phinf", "phinf", "naver"}
+)
 _IMAGE_PEOPLE_EXCLUDE_KEYWORDS = frozenset(
     {"face", "selfie", "profile", "portrait", "woman", "man", "person", "people", "모델", "인물", "여자", "남자"}
 )
 _IMAGE_SCENIC_EXCLUDE_KEYWORDS = frozenset(
     {"lake", "forest", "mountain", "river", "canoe", "camping", "nature", "landscape", "호수", "숲", "산", "강", "캠핑"}
 )
+_IMAGE_LOOKUP_LIMIT_PER_REQUEST = 4
 _BOLD_RE = re.compile(r"</?b>")
 
 ALL_CATEGORIES = ["restaurant", "cafe", "activity"]
@@ -65,6 +77,13 @@ CATEGORY_IMAGE_SUFFIX = {
     "restaurant": "음식 사진",
     "cafe": "카페 외관",
     "activity": "체험",
+}
+ACTIVITY_SUBTYPE_IMAGE_SUFFIX = {
+    "culture": "전시 공간",
+    "experience": "체험 공간",
+    "walk": "산책 야경",
+    "nightlife": "바 내부",
+    "shopping": "쇼룸 매장",
 }
 
 # Datalab 쿼리용: {area} + 아래 키워드 조합으로 카테고리별 인기도 수집
@@ -101,8 +120,15 @@ class CreateCourseUseCase:
         self._scorer = RuleScorer()
         self._composer = CourseComposer()
         self._place_search_cache: dict[tuple[str, str, int], list[dict]] = {}
+        self._image_lookup_count = 0
+        self._image_lookup_rate_limited = False
+        self._image_cache: dict[tuple[str, str, str], str | None] = {}
 
     async def execute(self, dto: CreateCourseRequestDto) -> CreateCourseResponseDto:
+        self._image_lookup_count = 0
+        self._image_lookup_rate_limited = False
+        self._image_cache.clear()
+
         start_time = self._parse_time(dto.start_time)
         time_slot = TimeSlot.from_time(start_time)
         transport = Transport.from_str(dto.transport)
@@ -119,21 +145,16 @@ class CreateCourseUseCase:
             for cat, places in places_by_category.items()
         }
 
-        # 4. 이미지 보강
-        for cat, places in filtered.items():
-            for place in places:
-                place.image_url = await self._fetch_image(place, cat)
-
-        # 5. 차량 이동 시 주차 정보 조회
+        # 4. 차량 이동 시 주차 정보 조회
         if transport.requires_parking_check():
             for places in filtered.values():
                 for place in places:
                     place.has_parking = await self._search.search_parking(place.road_address)
 
-        # 6. 장소 점수 계산
+        # 5. 장소 점수 계산
         self._scorer.apply_scores(filtered, category_trends, time_slot, transport)
 
-        # 7. 코스 조합 — 가중 랜덤 선택
+        # 6. 코스 조합 — 가중 랜덤 선택
         courses = self._composer.compose(filtered, time_slot, transport)
         self._log_recommendation_diagnostics(
             dto=dto,
@@ -146,8 +167,11 @@ class CreateCourseUseCase:
 
         main, sub1, sub2 = self._scorer.rank_courses(courses)
 
-        # 9. 최종 코스에 한해 Naver 지도 API로 실제 이동소요시간·동선 보강
+        # 7. 최종 코스 장소에만 이미지 보강
         final_courses = [c for c in [main, sub1, sub2] if c is not None]
+        await self._enrich_final_course_images(final_courses)
+
+        # 8. 최종 코스에 한해 Naver 지도 API로 실제 이동소요시간·동선 보강
         await self._enrich_with_routes(final_courses, dto.transport)
 
         recommendation_id = str(uuid.uuid4())
@@ -161,6 +185,17 @@ class CreateCourseUseCase:
         )
         self._course_store.save(recommendation_id, response)
         return response
+
+    async def _enrich_final_course_images(self, courses: list[Course]) -> None:
+        seen_places: set[tuple[str, str, str]] = set()
+        for course in courses:
+            for course_place in course.places:
+                place = course_place.place
+                key = (place.name, place.area, place.category)
+                if key in seen_places:
+                    continue
+                seen_places.add(key)
+                place.image_url = await self._fetch_image(place, place.category)
 
     # ── 트렌드 수집 ───────────────────────────────────────────────────────────
 
@@ -186,15 +221,34 @@ class CreateCourseUseCase:
         for cat in ALL_CATEGORIES:
             trend_score = category_trends.get(cat, 0.0)
             display = max(10, min(40, int(20 + trend_score * 20)))
+            if cat == "activity":
+                result[cat] = await self._collect_activity_places(
+                    area=area,
+                    time_slot=time_slot,
+                    display=display,
+                )
+                continue
             raw: list[dict] = []
             target_count = TOP_N_CANDIDATES if cat != "activity" else max(
                 TOP_N_CANDIDATES,
                 MIN_ACTIVITY_CANDIDATES,
             )
             for kw in CATEGORY_SEARCH_KEYWORDS[cat][time_slot.value]:
-                items = await self._search_places_cached(f"{area} {kw}", cat, display)
+                query = f"{area} {kw}"
+                items = await self._search_places_cached(query, cat, display)
                 raw.extend(items)
-                if len(self._sanitize_places(area, cat, [self._to_place(item, cat, rank) for rank, item in enumerate(raw, 1)])) >= target_count:
+                interim_places = [self._to_place(item, cat, rank) for rank, item in enumerate(raw, 1)]
+                interim_sanitized = self._sanitize_places(area, cat, interim_places)
+                self._log_collection_query(
+                    area=area,
+                    category=cat,
+                    query=query,
+                    fetched_count=len(items),
+                    accumulated_count=len(raw),
+                    sanitized_count=len(interim_sanitized),
+                    target_count=target_count,
+                )
+                if len(interim_sanitized) >= target_count:
                     break
             candidates = [self._to_place(item, cat, rank) for rank, item in enumerate(raw, 1)]
             sanitized = self._sanitize_places(area, cat, candidates)
@@ -210,23 +264,133 @@ class CreateCourseUseCase:
                     for rank, item in enumerate(fallback_raw, len(candidates) + 1)
                 ]
                 sanitized = self._sanitize_places(area, cat, candidates + fallback_candidates)
+                logger.info(
+                    "recommendation.activity_fallback area=%s time_slot=%s fetched=%s sanitized=%s target=%s",
+                    area,
+                    time_slot.value,
+                    len(fallback_raw),
+                    len(sanitized),
+                    MIN_ACTIVITY_CANDIDATES,
+                )
 
-            result[cat] = self._diversify_places(sanitized)
+            diversified = self._diversify_places(sanitized)
+            result[cat] = diversified
+            logger.info(
+                "recommendation.category_pool area=%s category=%s time_slot=%s raw=%s sanitized=%s diversified=%s samples=%s",
+                area,
+                cat,
+                time_slot.value,
+                len(raw),
+                len(sanitized),
+                len(diversified),
+                self._sample_place_names(diversified),
+            )
         return result
+
+    async def _collect_activity_places(
+        self,
+        area: str,
+        time_slot: TimeSlot,
+        display: int,
+    ) -> list[Place]:
+        raw: list[tuple[dict, str]] = []
+        target_count = max(TOP_N_CANDIDATES, MIN_ACTIVITY_CANDIDATES)
+        subtype_keywords = ACTIVITY_SUBTYPE_SEARCH_KEYWORDS.get(time_slot.value, {})
+
+        for subtype, keywords in subtype_keywords.items():
+            for kw in keywords:
+                query = f"{area} {kw}"
+                items = await self._search_places_cached(query, "activity", display)
+                raw.extend((item, subtype) for item in items)
+                interim_places = [
+                    self._to_place(item, "activity", rank, subtype_hint=subtype_hint)
+                    for rank, (item, subtype_hint) in enumerate(raw, 1)
+                ]
+                interim_sanitized = self._sanitize_places(area, "activity", interim_places)
+                self._log_collection_query(
+                    area=area,
+                    category="activity",
+                    query=query,
+                    fetched_count=len(items),
+                    accumulated_count=len(raw),
+                    sanitized_count=len(interim_sanitized),
+                    target_count=target_count,
+                    subtype=subtype,
+                )
+                if len(interim_sanitized) >= target_count:
+                    break
+            if len(raw) >= target_count:
+                break
+
+        candidates = [
+            self._to_place(item, "activity", rank, subtype_hint=subtype)
+            for rank, (item, subtype) in enumerate(raw, 1)
+        ]
+        sanitized = self._sanitize_places(area, "activity", candidates)
+
+        if len(sanitized) < MIN_ACTIVITY_CANDIDATES:
+            fallback_candidates = await self._collect_activity_fallback_places(
+                area=area,
+                time_slot=time_slot,
+                display=max(8, display // 2),
+                start_rank=len(candidates) + 1,
+            )
+            sanitized = self._sanitize_places(area, "activity", candidates + fallback_candidates)
+            logger.info(
+                "recommendation.activity_fallback area=%s time_slot=%s fetched=%s sanitized=%s target=%s",
+                area,
+                time_slot.value,
+                len(fallback_candidates),
+                len(sanitized),
+                MIN_ACTIVITY_CANDIDATES,
+            )
+
+        diversified = self._diversify_places(sanitized)
+        logger.info(
+            "recommendation.category_pool area=%s category=%s time_slot=%s raw=%s sanitized=%s diversified=%s samples=%s subtypes=%s",
+            area,
+            "activity",
+            time_slot.value,
+            len(raw),
+            len(sanitized),
+            len(diversified),
+            self._sample_place_names(diversified),
+            self._sample_activity_subtypes(diversified),
+        )
+        return diversified
 
     async def _collect_activity_fallback_places(
         self,
         area: str,
         time_slot: TimeSlot,
         display: int,
+        start_rank: int,
     ) -> list[dict]:
-        raw: list[dict] = []
-        for kw in ACTIVITY_FALLBACK_SEARCH_KEYWORDS.get(time_slot.value, []):
-            items = await self._search_places_cached(f"{area} {kw}", "activity", display)
-            raw.extend(items)
+        raw: list[tuple[dict, str]] = []
+        subtype_keywords = ACTIVITY_SUBTYPE_FALLBACK_SEARCH_KEYWORDS.get(time_slot.value, {})
+        for subtype, keywords in subtype_keywords.items():
+            for kw in keywords:
+                query = f"{area} {kw}"
+                items = await self._search_places_cached(query, "activity", display)
+                raw.extend((item, subtype) for item in items)
+                self._log_collection_query(
+                    area=area,
+                    category="activity",
+                    query=query,
+                    fetched_count=len(items),
+                    accumulated_count=len(raw),
+                    sanitized_count=len(raw),
+                    target_count=MIN_ACTIVITY_CANDIDATES,
+                    subtype=subtype,
+                )
+                if len(raw) >= MIN_ACTIVITY_CANDIDATES:
+                    break
             if len(raw) >= MIN_ACTIVITY_CANDIDATES:
                 break
-        return raw
+        return [
+            self._to_place(item, "activity", rank, subtype_hint=subtype)
+            for rank, (item, subtype) in enumerate(raw, start_rank)
+        ]
 
     async def _search_places_cached(
         self,
@@ -243,7 +407,7 @@ class CreateCourseUseCase:
         self._place_search_cache[cache_key] = items
         return items
 
-    def _to_place(self, item: dict, category: str, rank: int) -> Place:
+    def _to_place(self, item: dict, category: str, rank: int, subtype_hint: str | None = None) -> Place:
         name = _BOLD_RE.sub("", html.unescape(item.get("title", "")))
         desc = html.unescape(item.get("description", ""))
         road_addr = item.get("roadAddress", "")
@@ -259,6 +423,12 @@ class CreateCourseUseCase:
         has_parking = "주차" in desc or "주차" in raw_category
 
         brand = self._extract_brand(name)
+        activity_subtype = self._infer_activity_subtype(
+            name=name,
+            description=desc,
+            keywords=keywords,
+            subtype_hint=subtype_hint,
+        )
         return Place(
             name=name,
             area=area_name,
@@ -269,12 +439,29 @@ class CreateCourseUseCase:
             longitude=lng,
             search_rank=rank,
             keywords=keywords,
+            activity_subtype=activity_subtype,
             main_description=desc,
             brief_description=desc[:60] if desc else "",
             telephone=item.get("telephone", ""),
             has_parking=has_parking,
             is_franchise=(brand in _MAJOR_FRANCHISE),
         )
+
+    def _infer_activity_subtype(
+        self,
+        name: str,
+        description: str,
+        keywords: list[str],
+        subtype_hint: str | None,
+    ) -> str | None:
+        if subtype_hint is None:
+            return None
+
+        text = self._normalize_text(" ".join([name, description, " ".join(keywords)]))
+        for subtype, signals in ACTIVITY_SUBTYPE_SIGNALS.items():
+            if any(self._normalize_text(signal) in text for signal in signals):
+                return subtype
+        return subtype_hint
 
     def _sanitize_places(self, requested_area: str, category: str, places: list[Place]) -> list[Place]:
         sanitized: list[Place] = []
@@ -356,18 +543,18 @@ class CreateCourseUseCase:
         if not normalized_area:
             return True
 
-        if self._should_relax_area_matching(normalized_area):
-            return True
-
         haystack = self._normalize_text(
             " ".join(
                 part
-                for part in [place.area, place.address, place.road_address]
+                for part in [place.name, place.area, place.address, place.road_address]
                 if part
             )
         )
         if not haystack:
             return False
+
+        if self._should_relax_area_matching(normalized_area):
+            return normalized_area in haystack
 
         return all(token in haystack for token in normalized_area.split())
 
@@ -424,14 +611,69 @@ class CreateCourseUseCase:
     def _normalize_text(self, value: str) -> str:
         return " ".join(value.lower().split())
 
+    def _sample_place_names(self, places: list[Place], limit: int = 5) -> list[str]:
+        return [place.name for place in places[:limit]]
+
+    def _sample_activity_subtypes(self, places: list[Place], limit: int = 5) -> list[str]:
+        return [place.activity_subtype or "unknown" for place in places[:limit]]
+
+    def _log_collection_query(
+        self,
+        area: str,
+        category: str,
+        query: str,
+        fetched_count: int,
+        accumulated_count: int,
+        sanitized_count: int,
+        target_count: int,
+        subtype: str | None = None,
+    ) -> None:
+        logger.info(
+            "recommendation.collect_query area=%s category=%s subtype=%s query=%s fetched=%s accumulated=%s sanitized=%s target=%s",
+            area,
+            category,
+            subtype,
+            query,
+            fetched_count,
+            accumulated_count,
+            sanitized_count,
+            target_count,
+        )
+
     # ── 이미지 ────────────────────────────────────────────────────────────────
 
     async def _fetch_image(self, place: Place, category: str) -> str | None:
-        suffix = CATEGORY_IMAGE_SUFFIX[category]
+        cache_key = (place.name, place.area, category)
+        if cache_key in self._image_cache:
+            return self._image_cache[cache_key]
+
+        if self._image_lookup_rate_limited:
+            logger.info(
+                "recommendation.image_skipped place=%s category=%s reason=rate_limited",
+                place.name,
+                category,
+            )
+            self._image_cache[cache_key] = None
+            return None
+
+        if self._image_lookup_count >= _IMAGE_LOOKUP_LIMIT_PER_REQUEST:
+            logger.info(
+                "recommendation.image_skipped place=%s category=%s reason=budget_exceeded budget=%s",
+                place.name,
+                category,
+                _IMAGE_LOOKUP_LIMIT_PER_REQUEST,
+            )
+            self._image_cache[cache_key] = None
+            return None
+
+        suffix = self._image_suffix_for_place(place, category)
         query = f"{place.area} {place.name} {suffix}"
+        self._image_lookup_count += 1
         try:
-            images = await self._search.search_images(query)
+            images = await self._search.search_images(query, display=3)
         except Exception as exc:
+            if "429" in str(exc):
+                self._image_lookup_rate_limited = True
             logger.warning(
                 "recommendation.image_lookup_failed category=%s place=%s query=%s error=%s",
                 category,
@@ -439,6 +681,7 @@ class CreateCourseUseCase:
                 query,
                 exc,
             )
+            self._image_cache[cache_key] = None
             return None
         best_url: str | None = None
         best_score: int | None = None
@@ -452,6 +695,15 @@ class CreateCourseUseCase:
             if best_score is None or score > best_score:
                 best_score = score
                 best_url = image_url
+        if best_url is None:
+            logger.info(
+                "recommendation.image_missing place=%s category=%s query=%s candidates=%s",
+                place.name,
+                category,
+                query,
+                len(images),
+            )
+        self._image_cache[cache_key] = best_url
         return best_url
 
     def _is_valid_image(self, img: dict) -> bool:
@@ -471,12 +723,17 @@ class CreateCourseUseCase:
             return None
         if any(keyword in combined for keyword in _IMAGE_STOCK_EXCLUDE_KEYWORDS):
             return None
+        if any(keyword in combined for keyword in _IMAGE_SOURCE_EXCLUDE_KEYWORDS):
+            return None
+        if any(keyword in combined for keyword in _IMAGE_MENU_EXCLUDE_KEYWORDS):
+            return None
 
         score = 0
         place_name = self._normalize_text(place.name)
         area = self._normalize_text(place.area)
+        exact_name_match = bool(place_name and place_name in combined)
 
-        if place_name and place_name in combined:
+        if exact_name_match:
             score += 6
         else:
             name_tokens = [token for token in place_name.split() if len(token) >= 2]
@@ -484,9 +741,15 @@ class CreateCourseUseCase:
 
         if area and area in combined:
             score += 2
+        if any(keyword in combined for keyword in _IMAGE_PREFERRED_SOURCE_KEYWORDS):
+            score += 2
 
         category_signals = _CATEGORY_SIGNALS.get(category, ())
         score += sum(1 for signal in category_signals if self._normalize_text(signal) in combined)
+        score += self._activity_image_bonus(place, combined)
+
+        if category in {"restaurant", "cafe"} and not exact_name_match:
+            return None
 
         if any(bad in combined for bad in ("face", "selfie", "profile", "人物")):
             score -= 4
@@ -498,7 +761,30 @@ class CreateCourseUseCase:
         ):
             score -= 6
 
-        return score if score > 0 else None
+        minimum_score = 5 if category == "activity" else 7
+        return score if score >= minimum_score else None
+
+    def _image_suffix_for_place(self, place: Place, category: str) -> str:
+        if category == "activity" and place.activity_subtype:
+            return ACTIVITY_SUBTYPE_IMAGE_SUFFIX.get(place.activity_subtype, CATEGORY_IMAGE_SUFFIX[category])
+        return CATEGORY_IMAGE_SUFFIX[category]
+
+    def _activity_image_bonus(self, place: Place, combined: str) -> int:
+        if place.category != "activity" or not place.activity_subtype:
+            return 0
+
+        subtype_signals = {
+            "culture": ("전시", "갤러리", "미술관", "전시장"),
+            "experience": ("체험", "공방", "클래스", "공간"),
+            "walk": ("산책", "공원", "야경", "루프탑"),
+            "nightlife": ("와인바", "칵테일", "바", "라운지"),
+            "shopping": ("쇼룸", "편집숍", "소품샵", "매장"),
+        }
+        return sum(
+            2
+            for signal in subtype_signals.get(place.activity_subtype, ())
+            if self._normalize_text(signal) in combined
+        )
 
     # ── 지도 API 동선 보강 ─────────────────────────────────────────────────────
 
@@ -631,7 +917,10 @@ class CreateCourseUseCase:
         return f"{area} {body}".strip()
 
     def _build_course_description(self, course: Course, time_slot: TimeSlot) -> str:
-        segments = [self._describe_course_place(cp.place.category, cp.place.keywords) for cp in course.places]
+        segments = [
+            self._describe_course_place(cp.place.category, cp.place.keywords, cp.place.activity_subtype)
+            for cp in course.places
+        ]
         segments = [segment for segment in segments if segment]
 
         time_context = {
@@ -643,45 +932,61 @@ class CreateCourseUseCase:
         }.get(time_slot.value, "즐기는")
 
         if len(segments) >= 3:
-            return f"{segments[0]} 후 {segments[1]}에서 쉬고 {segments[2]} {time_context} 데이트 코스입니다."
+            return f"{segments[0]}, {segments[1]}, {segments[2]} {time_context} 데이트 코스입니다."
         if len(segments) == 2:
-            return f"{segments[0]} 후 {segments[1]} {time_context} 데이트 코스입니다."
+            return f"{segments[0]}고 {segments[1]}는 {time_context} 데이트 코스입니다."
         if len(segments) == 1:
             return f"{segments[0]} 중심으로 구성한 {time_context} 데이트 코스입니다."
         return f"{time_context} 데이트 코스입니다."
 
-    def _describe_course_place(self, category: str, keywords: list[str]) -> str:
+    def _describe_course_place(
+        self,
+        category: str,
+        keywords: list[str],
+        activity_subtype: str | None = None,
+    ) -> str:
         text = self._normalize_text(" ".join(keywords))
 
         if category == "restaurant":
             if "브런치" in text or "조식" in text:
-                return "브런치를 즐기고"
+                return "브런치를 즐기"
             if "이자카야" in text or "술집" in text or "포차" in text:
-                return "식사와 한잔을 즐기고"
-            return "맛집에서 식사하고"
+                return "식사와 한잔을 즐기"
+            return "맛집에서 식사하"
 
         if category == "cafe":
             if "와인바" in text or "칵테일바" in text or "바" in text:
-                return "와인바에서 분위기를 이어가고"
+                return "와인바에서 분위기를 이어가"
             if "디저트" in text:
-                return "디저트 카페에서 쉬고"
-            return "감성 카페에서 쉬고"
+                return "디저트 카페에서 쉬"
+            return "감성 카페에서 쉬"
+
+        if activity_subtype == "culture":
+            return "전시와 문화를 즐기"
+        if activity_subtype == "experience":
+            return "체험 데이트를 즐기"
+        if activity_subtype == "walk":
+            return "산책과 풍경을 즐기"
+        if activity_subtype == "nightlife":
+            return "밤 분위기를 즐기"
+        if activity_subtype == "shopping":
+            return "쇼핑과 구경을 즐기"
 
         if any(keyword in text for keyword in ("전시", "갤러리", "미술관", "박물관")):
-            return "전시를 즐기는"
+            return "전시를 즐기"
         if any(keyword in text for keyword in ("공원", "산책", "루프탑", "야경")):
-            return "산책을 즐기는"
+            return "산책을 즐기"
         if any(keyword in text for keyword in ("영화", "자동차극장")):
-            return "영화를 즐기는"
+            return "영화를 즐기"
         if any(keyword in text for keyword in ("공방", "원데이", "도자기", "향수")):
-            return "체험을 즐기는"
+            return "체험을 즐기"
         if any(keyword in text for keyword in ("볼링", "방탈출", "클라이밍", "보드게임")):
-            return "액티브 데이트를 즐기는"
+            return "액티브 데이트를 즐기"
         if any(keyword in text for keyword in ("편집숍", "소품샵", "빈티지", "쇼핑몰", "시장")):
-            return "쇼핑을 즐기는"
+            return "쇼핑을 즐기"
         if any(keyword in text for keyword in ("와인바", "칵테일바", "lp바", "루프탑바", "펍", "주점")):
-            return "밤 분위기를 즐기는"
-        return "데이트를 즐기는"
+            return "밤 분위기를 즐기"
+        return "데이트를 즐기"
 
     def _select_course_cover_image(self, course: Course) -> str | None:
         ranked_candidates: list[tuple[int, str]] = []
@@ -793,6 +1098,17 @@ class CreateCourseUseCase:
             if "브런치" in text:
                 return "브런치 카페"
             return "카페"
+
+        if place.activity_subtype == "culture":
+            return "전시"
+        if place.activity_subtype == "experience":
+            return "체험"
+        if place.activity_subtype == "walk":
+            return "산책"
+        if place.activity_subtype == "nightlife":
+            return "야경"
+        if place.activity_subtype == "shopping":
+            return "쇼핑"
 
         if any(keyword in text for keyword in ("전시", "갤러리", "미술관", "박물관")):
             return "전시"

@@ -13,6 +13,35 @@ from app.domains.recommendation.domain.value_object.transport import Transport
 
 
 class RuleScorer:
+    _TIME_SLOT_ACTIVITY_BONUS: dict[str, dict[str, float]] = {
+        "morning": {
+            "walk": 0.45,
+            "culture": 0.35,
+        },
+        "lunch": {
+            "culture": 0.4,
+            "experience": 0.3,
+            "walk": 0.25,
+            "shopping": 0.25,
+        },
+        "afternoon": {
+            "culture": 0.45,
+            "experience": 0.4,
+            "walk": 0.35,
+            "shopping": 0.3,
+        },
+        "evening": {
+            "nightlife": 0.5,
+            "walk": 0.35,
+            "culture": 0.25,
+            "experience": 0.2,
+        },
+        "late_night": {
+            "nightlife": 0.55,
+            "walk": 0.25,
+            "culture": 0.15,
+        },
+    }
 
     def apply_scores(
         self,
@@ -57,12 +86,18 @@ class RuleScorer:
         return score
 
     def _time_fit(self, place: Place, time_slot: TimeSlot) -> float:
-        """저녁/심야에 야간 업소는 소폭 가산점."""
+        """시간대에 맞는 activity subtype과 야간 업소에 가산점."""
+        score = 1.0
+
+        if place.category == "activity" and place.activity_subtype:
+            bonus = self._TIME_SLOT_ACTIVITY_BONUS.get(time_slot.value, {}).get(place.activity_subtype, 0.0)
+            score += bonus
+
         if time_slot.value in ("evening", "late_night"):
             place_text = " ".join([place.name, *place.keywords]).lower()
             if any(sig in place_text for sig in NIGHTLIFE_SIGNALS):
-                return 1.5
-        return 1.0
+                score += 0.5
+        return score
 
     def _is_time_inappropriate(self, place: Place, time_slot: TimeSlot) -> bool:
         """낮 시간대에 야간 업소가 포함되어 있으면 True."""
@@ -151,8 +186,23 @@ class RuleScorer:
         place_overlap_count = len(anchor.place_name_set() & candidate.place_name_set())
         category_overlap_count = len(anchor.category_set() & candidate.category_set())
         same_pattern = 1 if anchor.category_order() == candidate.category_order() else 0
+        same_activity_subtype_count = self._shared_activity_subtype_count(anchor, candidate)
         return (
             place_overlap_count * 10.0
             + category_overlap_count * 2.0
             + same_pattern * 3.0
+            + same_activity_subtype_count * 2.5
         )
+
+    def _shared_activity_subtype_count(self, anchor: Course, candidate: Course) -> int:
+        anchor_subtypes = {
+            course_place.place.activity_subtype
+            for course_place in anchor.places
+            if course_place.place.activity_subtype
+        }
+        candidate_subtypes = {
+            course_place.place.activity_subtype
+            for course_place in candidate.places
+            if course_place.place.activity_subtype
+        }
+        return len(anchor_subtypes & candidate_subtypes)

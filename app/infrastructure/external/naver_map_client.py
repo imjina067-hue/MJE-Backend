@@ -8,7 +8,7 @@ from app.domains.recommendation.service.port.naver_map_port import RouteResult
 from app.infrastructure.config.settings import get_settings
 
 _DRIVING_URL = "https://naveropenapi.apigw.ntruss.com/map-direction/v1/driving"
-_WALKING_URL = "https://naveropenapi.apigw.ntruss.com/map-direction/v1/walking"
+_WALKING_URL = "https://naveropenapi.apigw.ntruss.com/map-direction-15/v1/walking"
 
 _TRANSPORT_URL = {
     "car": _DRIVING_URL,

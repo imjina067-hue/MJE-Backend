@@ -121,12 +121,30 @@ class CourseComposer:
         else:
             pool = available
 
-        preferred = [pattern for pattern in pool if pattern[0] in preferred_starts]
-        others = [pattern for pattern in pool if pattern[0] not in preferred_starts]
+        activity_priority = self._activity_priority_patterns(pool, preferred_starts)
+        preferred = [pattern for pattern in activity_priority if pattern[0] in preferred_starts]
+        others = [pattern for pattern in activity_priority if pattern[0] not in preferred_starts]
         rng.shuffle(preferred)
         rng.shuffle(others)
         ordered = preferred + others
         return ordered[: self._MAX_PATTERN_ATTEMPTS]
+
+    def _activity_priority_patterns(
+        self,
+        patterns: list[list[str]],
+        preferred_starts: list[str],
+    ) -> list[list[str]]:
+        activity_patterns = [pattern for pattern in patterns if "activity" in pattern]
+        non_activity_patterns = [pattern for pattern in patterns if "activity" not in pattern]
+        ordered_activity = sorted(
+            activity_patterns,
+            key=lambda pattern: (
+                0 if pattern[0] in preferred_starts else 1,
+                0 if len(pattern) >= 3 else 1,
+                pattern.index("activity"),
+            ),
+        )
+        return ordered_activity + non_activity_patterns
 
     def _available_patterns(
         self,
@@ -210,13 +228,17 @@ class CourseComposer:
         plans: list[tuple[list[list[str]], bool, bool]] = [
             (pattern_pool, True, True),
         ]
+        if course_type == "main":
+            if fallback_patterns and fallback_patterns is not pattern_pool:
+                plans.append((fallback_patterns, True, True))
+            return plans
+
         if fallback_patterns and fallback_patterns is not pattern_pool:
             plans.append((fallback_patterns, True, True))
-        if course_type != "main":
-            plans.append((pattern_pool, False, True))
-            if fallback_patterns and fallback_patterns is not pattern_pool:
-                plans.append((fallback_patterns, False, True))
-            plans.append((pattern_pool, False, False))
-            if fallback_patterns and fallback_patterns is not pattern_pool:
-                plans.append((fallback_patterns, False, False))
+        plans.append((pattern_pool, False, True))
+        if fallback_patterns and fallback_patterns is not pattern_pool:
+            plans.append((fallback_patterns, False, True))
+        plans.append((pattern_pool, False, False))
+        if fallback_patterns and fallback_patterns is not pattern_pool:
+            plans.append((fallback_patterns, False, False))
         return plans

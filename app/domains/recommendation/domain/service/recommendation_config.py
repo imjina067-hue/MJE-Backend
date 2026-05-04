@@ -60,69 +60,70 @@ CATEGORY_SEARCH_KEYWORDS: dict[str, dict[str, list[str]]] = {
         "evening": ["카페 와인바 칵테일바", "카페 커피 디저트"],
         "late_night": ["칵테일바 와인바 루프탑바 LP바", "카페 와인바"],
     },
-    "activity": {
-        "morning": [
-            "공원 산책",
-            "미술관 전시 갤러리",
-            "서점 문화공간",
-        ],
-        "lunch": [
-            "미술관 전시 갤러리 영화",
-            "볼링 방탈출 클라이밍 보드게임카페",
-            "편집숍 소품샵 빈티지 복합쇼핑몰",
-            "공원 산책 서점",
-        ],
-        "afternoon": [
-            "미술관 전시 갤러리 영화",
-            "볼링 방탈출 클라이밍 보드게임카페",
-            "공방 원데이클래스 도자기 향수만들기",
-            "편집숍 소품샵 빈티지 복합쇼핑몰 전통시장",
-            "공원 산책 루프탑 자전거대여",
-            "서점 문화공간 전시",
-        ],
-        "evening": [
-            "미술관 전시 영화",
-            "볼링 방탈출 클라이밍",
-            "공원 루프탑",
-            "칵테일바 와인바 루프탑바 LP바",
-            "홀덤펍 이색주점",
-            "공원 산책 야경 영화",
-        ],
-        "late_night": [
-            "칵테일바 와인바 루프탑바 LP바",
-            "홀덤펍 이색주점",
-            "자동차극장 심야영화",
-            "심야영화",
-        ],
+}
+
+ACTIVITY_SUBTYPE_SEARCH_KEYWORDS: dict[str, dict[str, list[str]]] = {
+    "morning": {
+        "walk": ["산책", "공원", "한강공원"],
+        "culture": ["전시", "갤러리", "서점"],
+    },
+    "lunch": {
+        "culture": ["전시", "갤러리", "영화관"],
+        "experience": ["공방", "원데이클래스", "체험"],
+        "walk": ["산책", "공원", "루프탑"],
+        "shopping": ["편집숍", "소품샵", "빈티지샵"],
+    },
+    "afternoon": {
+        "culture": ["전시", "갤러리", "미술관"],
+        "experience": ["공방", "원데이클래스", "향수공방"],
+        "walk": ["산책", "공원", "루프탑"],
+        "shopping": ["편집숍", "소품샵", "쇼룸"],
+    },
+    "evening": {
+        "culture": ["전시", "영화관"],
+        "experience": ["방탈출", "볼링장", "보드게임카페"],
+        "walk": ["산책", "야경", "루프탑"],
+        "nightlife": ["와인바", "칵테일바", "lp바"],
+        "shopping": ["편집숍", "쇼룸"],
+    },
+    "late_night": {
+        "walk": ["야경", "산책"],
+        "nightlife": ["와인바", "칵테일바", "lp바"],
+        "culture": ["심야영화", "자동차극장"],
     },
 }
 
-# Keep the 3-axis structure, but let activity recover with walk/culture style queries
-# when the primary activity search is too sparse for a given area/time slot.
-ACTIVITY_FALLBACK_SEARCH_KEYWORDS: dict[str, list[str]] = {
-    "morning": [
-        "공원 산책",
-        "전시 갤러리",
-        "서점 문화공간",
-    ],
-    "lunch": [
-        "공원 산책",
-        "전시 갤러리 영화",
-        "편집숍 소품샵",
-    ],
-    "afternoon": [
-        "공원 산책 루프탑",
-        "전시 갤러리 영화",
-        "편집숍 소품샵 빈티지",
-    ],
-    "evening": [
-        "전시 영화 루프탑",
-        "공원 산책 야경",
-        "칵테일바 와인바",
-    ],
-    "late_night": [
-        "칵테일바 와인바 LP바",
-        "심야영화 자동차극장",
-        "이색주점 홀덤펍",
-    ],
+ACTIVITY_SUBTYPE_FALLBACK_SEARCH_KEYWORDS: dict[str, dict[str, list[str]]] = {
+    "morning": {
+        "walk": ["산책"],
+        "culture": ["전시"],
+    },
+    "lunch": {
+        "walk": ["산책"],
+        "culture": ["전시"],
+        "shopping": ["소품샵"],
+    },
+    "afternoon": {
+        "walk": ["산책"],
+        "culture": ["갤러리"],
+        "experience": ["공방"],
+    },
+    "evening": {
+        "walk": ["야경"],
+        "nightlife": ["와인바"],
+        "culture": ["전시"],
+    },
+    "late_night": {
+        "walk": ["야경"],
+        "nightlife": ["칵테일바"],
+        "culture": ["심야영화"],
+    },
+}
+
+ACTIVITY_SUBTYPE_SIGNALS: dict[str, tuple[str, ...]] = {
+    "culture": ("전시", "갤러리", "미술관", "박물관", "영화관", "서점"),
+    "experience": ("공방", "원데이", "클래스", "체험", "향수", "도자기", "방탈출", "볼링", "보드게임"),
+    "walk": ("산책", "공원", "야경", "루프탑", "한강"),
+    "nightlife": ("와인바", "칵테일바", "lp바", "펍", "바", "주점"),
+    "shopping": ("편집숍", "소품샵", "빈티지", "쇼룸", "복합문화공간"),
 }

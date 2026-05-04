@@ -18,6 +18,7 @@ class Place:
     search_rank: int        # Naver 검색 결과 내 순위 (1-based)
 
     keywords: list[str] = field(default_factory=list)
+    activity_subtype: Optional[str] = None
     main_description: str = ""
     brief_description: str = ""
     telephone: str = ""
